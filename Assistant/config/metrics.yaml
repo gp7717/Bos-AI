@@ -1,0 +1,157 @@
+# Metric Dictionary - Authoritative definitions of all metrics
+
+metrics:
+  - metric_id: roas
+    name: Return on Ad Spend
+    formula: revenue / spend
+    description: Revenue generated per unit of ad spend
+    unit: ratio
+    category: performance
+    dependencies:
+      - revenue
+      - spend
+    computation_type: ratio
+
+  - metric_id: ctr
+    name: Click-Through Rate
+    formula: clicks / impressions
+    description: Percentage of impressions that resulted in clicks
+    unit: percentage
+    category: engagement
+    dependencies:
+      - clicks
+      - impressions
+    computation_type: ratio
+
+  - metric_id: cpc
+    name: Cost Per Click
+    formula: spend / clicks
+    description: Average cost per click
+    unit: currency
+    category: cost
+    dependencies:
+      - spend
+      - clicks
+    computation_type: ratio
+
+  - metric_id: cpm
+    name: Cost Per Mille
+    formula: spend / (impressions / 1000)
+    description: Cost per thousand impressions
+    unit: currency
+    category: cost
+    dependencies:
+      - spend
+      - impressions
+    computation_type: ratio
+
+  - metric_id: acos
+    name: Advertising Cost of Sales
+    formula: spend / sales
+    description: Percentage of sales spent on advertising
+    unit: percentage
+    category: efficiency
+    dependencies:
+      - spend
+      - sales
+    computation_type: ratio
+
+  - metric_id: aov
+    name: Average Order Value
+    formula: total_revenue / order_count
+    description: Average value per order
+    unit: currency
+    category: revenue
+    dependencies:
+      - total_revenue
+      - order_count
+    computation_type: ratio
+
+  - metric_id: ltv
+    name: Lifetime Value
+    formula: average_order_value * purchase_frequency * customer_lifespan
+    description: Predicted revenue from a customer over their lifetime
+    unit: currency
+    category: revenue
+    dependencies:
+      - average_order_value
+      - purchase_frequency
+      - customer_lifespan
+    computation_type: aggregation
+
+  - metric_id: revenue
+    name: Revenue
+    formula: sum(orders.total_price_amount)
+    description: Total revenue from orders
+    unit: currency
+    category: revenue
+    dependencies:
+      - orders
+    computation_type: aggregation
+
+  - metric_id: spend
+    name: Ad Spend
+    formula: sum(ad_campaigns.spend)
+    description: Total advertising spend
+    unit: currency
+    category: cost
+    dependencies:
+      - ad_campaigns
+    computation_type: aggregation
+
+  - metric_id: net_sales
+    name: Net Sales
+    formula: revenue - refunds - discounts
+    description: Revenue after refunds and discounts
+    unit: currency
+    category: revenue
+    dependencies:
+      - revenue
+      - refunds
+      - discounts
+    computation_type: aggregation
+
+  - metric_id: margin
+    name: Profit Margin
+    formula: (revenue - cogs) / revenue
+    description: Profit margin percentage
+    unit: percentage
+    category: profitability
+    dependencies:
+      - revenue
+      - cogs
+    computation_type: ratio
+
+  - metric_id: conversion_rate
+    name: Conversion Rate
+    formula: orders / clicks
+    description: Percentage of clicks that resulted in orders
+    unit: percentage
+    category: performance
+    dependencies:
+      - orders
+      - clicks
+    computation_type: ratio
+
+  - metric_id: mom_growth
+    name: Month-over-Month Growth
+    formula: (current_month - previous_month) / previous_month
+    description: Percentage change from previous month
+    unit: percentage
+    category: growth
+    dependencies:
+      - current_month
+      - previous_month
+    computation_type: delta
+
+  - metric_id: wow_growth
+    name: Week-over-Week Growth
+    formula: (current_week - previous_week) / previous_week
+    description: Percentage change from previous week
+    unit: percentage
+    category: growth
+    dependencies:
+      - current_week
+      - previous_week
+    computation_type: delta
+
