@@ -1,6 +1,9 @@
 """Schema Context Service - Provides schema metadata in MCP-style format for LLM."""
 from typing import Dict, List, Optional, Any
+from pathlib import Path
+import yaml
 from app.services.schema_registry import schema_registry
+from app.services.system_config import system_config
 from app.config.logging_config import get_logger
 import json
 
@@ -13,6 +16,19 @@ class SchemaContextService:
     def __init__(self):
         """Initialize schema context service."""
         self.registry = schema_registry
+        self.table_metadata = self._load_table_metadata()
+    
+    def _load_table_metadata(self) -> Dict[str, Any]:
+        """Load table metadata from YAML config."""
+        try:
+            config_path = Path(__file__).parent.parent.parent / "config" / "table_metadata.yaml"
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f) or {}
+            logger.info(f"✅ [SCHEMA_CONTEXT] Loaded table metadata from {config_path}")
+            return config.get('tables', {})
+        except Exception as e:
+            logger.warning(f"⚠️ [SCHEMA_CONTEXT] Failed to load table metadata | error={str(e)}")
+            return {}
     
     def get_table_context(self, schema: str, table: str) -> Optional[Dict[str, Any]]:
         """Get detailed table context for a specific table."""
@@ -68,31 +84,21 @@ class SchemaContextService:
         """Get relevant tables based on query context (metrics and entities)."""
         relevant_tables = []
         
-        # Map metrics/entities to likely tables
-        table_keywords = {
-            'revenue': ['shopify_orders', 'dw_meta_ads_attribution', 'dw_google_ads_attribution'],
-            'spend': ['amazon_product_metrics_daily', 'dw_meta_ads_attribution', 'dw_google_ads_attribution'],
-            'orders': ['shopify_orders'],
-            'campaign': ['amazon_product_metrics_daily', 'dw_meta_ads_attribution', 'dw_google_ads_attribution'],
-            'product': ['shopify_product_variants', 'shopify_order_line_items'],
-            'ads': ['amazon_product_metrics_daily', 'dw_meta_ads_attribution', 'dw_google_ads_attribution'],
-            'meta': ['dw_meta_ads_attribution'],
-            'google': ['dw_google_ads_attribution'],
-            'amazon': ['amazon_product_metrics_daily']
-        }
+        # Get metric-to-table mappings from config
+        metric_mappings = system_config.get_metric_table_mappings()
         
         # Find relevant tables
         table_names = set()
         for metric in metrics:
-            metric_lower = metric.lower()
-            for keyword, tables in table_keywords.items():
-                if keyword in metric_lower:
-                    table_names.update(tables)
+            tables = system_config.get_tables_for_metric(metric)
+            table_names.update(tables)
         
         for entity_key, entity_value in entities.items():
             entity_str = str(entity_value).lower()
-            for keyword, tables in table_keywords.items():
+            # Check if entity matches any metric keyword
+            for keyword in metric_mappings.keys():
                 if keyword in entity_str:
+                    tables = system_config.get_tables_for_metric(keyword)
                     table_names.update(tables)
         
         # Get full context for each table
@@ -104,13 +110,14 @@ class SchemaContextService:
         return relevant_tables
     
     def format_for_llm(self, tables: List[Dict[str, Any]]) -> str:
-        """Format table schemas in a format optimized for LLM SQL generation."""
+        """Format table schemas in structured, minimal format optimized for LLM SQL generation."""
         formatted = []
         
-        # Add critical header with exact table names
         formatted.append("=" * 80)
-        formatted.append("CRITICAL: Use EXACT table names as shown below. DO NOT use generic names!")
+        formatted.append("DATABASE SCHEMA CONTEXT (Query-Relevant Tables Only)")
         formatted.append("=" * 80)
+        formatted.append("")
+        formatted.append("⚠️ CRITICAL: Use EXACT table names as shown. DO NOT use generic names like 'orders', 'sales'.")
         formatted.append("")
         
         for table in tables:
@@ -118,34 +125,111 @@ class SchemaContextService:
             schema = table['schema']
             table_name = table['table']
             
-            # Emphasize exact table names
-            table_info = f"""## Table: {full_name}
-
-⚠️ **IMPORTANT: Use the EXACT table name '{full_name}' in SQL queries.**
-⚠️ **DO NOT use generic names like 'orders', 'sales', etc.**
-⚠️ **Full qualified name: {full_name}**
-⚠️ **Schema: {schema}, Table: {table_name}**
-
-**Columns:**
-"""
-            formatted.append(table_info)
+            # Get metadata if available
+            metadata = self.table_metadata.get(full_name, {})
+            purpose = metadata.get('purpose', f'Table: {full_name}')
             
-            for col in table['columns']:
-                pk_marker = " [PRIMARY KEY]" if col['primary_key'] else ""
-                nullable_marker = "" if col['nullable'] else " [NOT NULL]"
-                formatted.append(f"- `{col['name']}` ({col['type']}){pk_marker}{nullable_marker}")
+            formatted.append(f"## {full_name}")
+            formatted.append(f"Purpose: {purpose}")
+            formatted.append("")
             
-            formatted.append(f"\n**Primary Keys:** {', '.join(table['primary_keys']) if table['primary_keys'] else 'None'}")
+            # Key columns with purposes
+            if metadata.get('key_columns'):
+                formatted.append("Key Columns:")
+                for col_meta in metadata['key_columns']:
+                    col_name = col_meta['name']
+                    col_purpose = col_meta.get('purpose', '')
+                    col_type = col_meta.get('type', '')
+                    
+                    markers = []
+                    if col_meta.get('primary_key'):
+                        markers.append("PRIMARY KEY")
+                    if col_meta.get('foreign_key'):
+                        markers.append("FOREIGN KEY")
+                    if col_meta.get('date_column'):
+                        markers.append("DATE COLUMN")
+                    
+                    marker_str = f" [{', '.join(markers)}]" if markers else ""
+                    formatted.append(f"  • {col_name} ({col_type}){marker_str}")
+                    formatted.append(f"    → {col_purpose}")
+                    
+                    # Show foreign key reference explicitly
+                    if col_meta.get('references'):
+                        formatted.append(f"    → References: {col_meta['references']}")
+                
+                formatted.append("")
+            else:
+                # Fallback to basic column list
+                formatted.append("Columns:")
+                for col in table['columns'][:15]:  # Limit to first 15 columns
+                    pk_marker = " [PK]" if col['primary_key'] else ""
+                    formatted.append(f"  • {col['name']} ({col['type']}){pk_marker}")
+                formatted.append("")
             
-            if table['foreign_keys']:
-                formatted.append(f"\n**Foreign Keys:**")
+            # Relationships with purpose
+            if metadata.get('relationships'):
+                formatted.append("Relationships:")
+                for rel in metadata['relationships']:
+                    rel_type = rel.get('type', '')
+                    local_col = rel.get('local_column', '')
+                    foreign_tbl = rel.get('foreign_table', '')
+                    foreign_col = rel.get('foreign_column', '')
+                    rel_purpose = rel.get('purpose', '')
+                    
+                    formatted.append(f"  • {rel_type}: {full_name}.{local_col} → {foreign_tbl}.{foreign_col}")
+                    formatted.append(f"    → {rel_purpose}")
+                    formatted.append(f"    Example: JOIN {foreign_tbl} ON {full_name}.{local_col} = {foreign_tbl}.{foreign_col}")
+                formatted.append("")
+            elif table.get('foreign_keys'):
+                formatted.append("Foreign Keys:")
                 for fk in table['foreign_keys']:
-                    formatted.append(f"  - {', '.join(fk['columns'])} → {fk['referred_table']}.{', '.join(fk['referred_columns'])}")
+                    fk_cols = fk['columns'].split(', ') if isinstance(fk['columns'], str) else fk['columns']
+                    ref_table = fk.get('referred_table', '')
+                    ref_cols = fk['referred_columns'].split(', ') if isinstance(fk['referred_columns'], str) else fk['referred_columns']
+                    formatted.append(f"  • {full_name}.{fk_cols[0]} → {ref_table}.{ref_cols[0]}")
+                formatted.append("")
             
-            if table['date_column']:
-                formatted.append(f"\n**Date Column:** `{table['date_column']}` (use for date filtering with :date_start and :date_end parameters)")
+            # JSON columns with extraction examples
+            if metadata.get('json_columns'):
+                formatted.append("JSON Columns (Special Handling Required):")
+                for json_col in metadata['json_columns']:
+                    col_name = json_col['name']
+                    col_purpose = json_col.get('purpose', '')
+                    extraction = json_col.get('extraction_example', '')
+                    formatted.append(f"  • {col_name}: {col_purpose}")
+                    if extraction:
+                        formatted.append(f"    Extraction: {extraction}")
+                formatted.append("")
             
-            formatted.append("\n")
+            # Table-specific quirks
+            if metadata.get('quirks'):
+                formatted.append("⚠️ Important Notes:")
+                for quirk in metadata['quirks']:
+                    formatted.append(f"  • {quirk}")
+                formatted.append("")
+            
+            # Date column info
+            date_col = table.get('date_column') or metadata.get('date_column') or self.registry.get_date_column(schema, table_name)
+            if date_col:
+                formatted.append(f"Date Filtering: Use `{date_col}` with BETWEEN :date_start AND :date_end")
+                formatted.append(f"⚠️ DO NOT use 'order_date' or other names - use '{date_col}'")
+                formatted.append("")
+            
+            formatted.append("---")
+            formatted.append("")
+        
+        # Relationship summary
+        formatted.append("=" * 80)
+        formatted.append("COMMON JOIN PATTERNS")
+        formatted.append("=" * 80)
+        formatted.append("")
+        formatted.append("Order → Line Items → Product Variants:")
+        formatted.append("  FROM public.shopify_orders o")
+        formatted.append("  JOIN public.shopify_order_line_items oli ON o.order_id = oli.order_id")
+        formatted.append("  JOIN public.shopify_product_variants pv ON oli.variant_id = pv.variant_id")
+        formatted.append("")
+        formatted.append("Note: product_id is in shopify_product_variants, NOT in shopify_order_line_items")
+        formatted.append("")
         
         return "\n".join(formatted)
     

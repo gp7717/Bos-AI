@@ -8,6 +8,7 @@ from app.services.tool_registry import tool_registry
 from app.services.metric_dictionary import metric_dictionary
 from app.services.schema_registry import schema_registry
 from app.services.schema_context import SchemaContextService
+from app.services.system_config import system_config
 from app.config.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -100,6 +101,9 @@ class PlannerAgent:
         """Build tool catalog description for LLM."""
         tools = []
         for tool in tool_registry.get_all_tools():
+            # Skip excluded tools based on config
+            if system_config.is_tool_excluded(tool.tool_id):
+                continue
             tool_info = {
                 'id': tool.tool_id,
                 'kind': tool.kind,
@@ -139,13 +143,9 @@ class PlannerAgent:
         )
         
         if not relevant_tables:
-            # Fallback: get common tables
+            # Fallback: get common tables from config
             logger.debug(f"⚠️ [PLANNER] No relevant tables found, using common tables")
-            common_tables = [
-                'public.shopify_orders',
-                'public.amazon_product_metrics_daily',
-                'public.dw_meta_ads_attribution'
-            ]
+            common_tables = system_config.get_common_fallback_tables()
             relevant_tables = []
             for table in common_tables:
                 schema, table_name = table.split('.', 1)
@@ -210,17 +210,19 @@ Return JSON with this structure:
 }}
 
 Rules:
-- Each step must reference a valid tool and capability
+- Each step must reference a valid tool and capability in the format: "tool_id.capability_name"
+- **CRITICAL**: Tool format MUST be "tool_id.capability_name" (e.g., "sales_db.sql", "compute.aggregate")
+- For SQL tools: use "tool_id.sql" format
+- For compute tools: use "compute.aggregate", "compute.join", or "compute.calculate"
 - Use depends_on to specify step dependencies
 - For metrics requiring multiple data sources, create separate steps and join them
 - Always include date range filters in inputs
-- For SQL-based tools (sales_db, amazon_ads_db, etc.), you can include:
+- For SQL-based tools, you can include:
   * "sql" field with the generated SQL query (use parameterized queries with :param_name)
   * "params" field with parameter values
   * **MUST use EXACT table names from schema (e.g., 'public.shopify_orders', NOT 'orders')**
   * **MUST use exact column names as shown in the schema**
 - If generating SQL, reference the schema tables above for accurate column names and relationships
-- Example: For sales data, use 'public.shopify_orders', NOT 'orders' or 'sales'
 """
     
     def _build_planning_prompt(self, task_spec: TaskSpec) -> str:
@@ -246,9 +248,13 @@ Generate a plan that:
         """Parse LLM output into ExecutionPlan."""
         steps = []
         for step_data in plan_data.get('steps', []):
+            tool = step_data.get('tool', '')
+            # Normalize tool format: ensure it has tool_id.capability_name format
+            tool = self._normalize_tool_format(tool)
+            
             step = PlanStep(
                 id=step_data.get('id', f"step_{len(steps)}"),
-                tool=step_data.get('tool', ''),
+                tool=tool,
                 inputs=step_data.get('inputs', {}),
                 depends_on=step_data.get('depends_on', []),
                 output_key=step_data.get('output_key')
@@ -261,11 +267,52 @@ Generate a plan that:
             metadata={'task_spec': task_spec.dict()}
         )
     
+    def _normalize_tool_format(self, tool: str) -> str:
+        """Normalize tool format to ensure it follows tool_id.capability_name pattern."""
+        if not tool:
+            return tool
+        
+        # If already in correct format (contains dot), return as is
+        if '.' in tool:
+            return tool
+        
+        # Normalize based on tool_id
+        tool_id = tool
+        
+        # SQL tools: add default .sql capability
+        if system_config.is_sql_tool(tool_id):
+            normalized = f"{tool_id}.sql"
+            logger.debug(f"🔧 [PLANNER] Normalized SQL tool | original={tool_id} | normalized={normalized}")
+            return normalized
+        
+        # Compute tool: default to .aggregate capability
+        if system_config.is_compute_tool(tool_id):
+            normalized = f"{tool_id}.aggregate"
+            logger.debug(f"🔧 [PLANNER] Normalized compute tool | original={tool_id} | normalized={normalized}")
+            return normalized
+        
+        # API tools: check if they have capabilities defined
+        tool_def = tool_registry.get_tool(tool_id)
+        if tool_def and tool_def.capabilities:
+            # Use first capability as default
+            default_capability = tool_def.capabilities[0].name
+            normalized = f"{tool_id}.{default_capability}"
+            logger.debug(f"🔧 [PLANNER] Normalized API tool | original={tool_id} | normalized={normalized}")
+            return normalized
+        
+        # If we can't normalize, return as is (will be caught by validation)
+        logger.warning(f"⚠️ [PLANNER] Could not normalize tool format | tool={tool_id}")
+        return tool
+    
     def _enhance_plan(self, plan: ExecutionPlan, task_spec: TaskSpec) -> ExecutionPlan:
         """Enhance plan with additional context and validation."""
         # Add date range to all data access steps
         for step in plan.steps:
-            if step.tool.startswith(('amazon_ads', 'sales_db', 'meta_ads', 'google_ads', 'organic')):
+            # Extract tool_id (handle both normalized and non-normalized formats)
+            tool_parts = step.tool.split('.')
+            tool_id = tool_parts[0]
+            
+            if system_config.is_sql_tool(tool_id) or tool_id in system_config.get_date_range_tools():
                 if 'inputs' not in step.inputs:
                     step.inputs['inputs'] = {}
                 step.inputs['inputs']['date_start'] = str(task_spec.time.start)

@@ -1,0 +1,183 @@
+# Table Metadata - Structured metadata for LLM context
+# Provides column purposes, relationships, and table-specific quirks
+
+tables:
+  public.shopify_orders:
+    purpose: "Main orders table - contains order-level information"
+    date_column: created_at
+    key_columns:
+      - name: order_id
+        purpose: "Primary key - unique identifier for each order"
+        type: text
+        primary_key: true
+      - name: created_at
+        purpose: "Date column for filtering - use this for date range queries, NOT 'order_date'"
+        type: timestamp with time zone
+        date_column: true
+      - name: total_price_amount
+        purpose: "Order total revenue amount"
+        type: numeric
+      - name: ship_city
+        purpose: "Shipping city for geographic filtering"
+        type: text
+      - name: ship_country
+        purpose: "Shipping country for geographic filtering"
+        type: text
+    relationships:
+      - type: one_to_many
+        local_column: order_id
+        foreign_table: public.shopify_order_line_items
+        foreign_column: order_id
+        purpose: "Each order can have multiple line items"
+    quirks:
+      - "DO NOT use 'order_date' - use 'created_at' instead"
+      - "Date filtering: WHERE created_at BETWEEN :date_start AND :date_end"
+    json_columns: []
+  
+  public.shopify_order_line_items:
+    purpose: "Order line items - individual products in each order"
+    key_columns:
+      - name: item_id
+        purpose: "Primary key - unique identifier for each line item"
+        type: text
+        primary_key: true
+      - name: order_id
+        purpose: "Foreign key → shopify_orders.order_id (links to parent order)"
+        type: text
+        foreign_key: true
+        references: public.shopify_orders.order_id
+      - name: variant_id
+        purpose: "Foreign key → shopify_product_variants.variant_id (links to product variant)"
+        type: text
+        foreign_key: true
+        references: public.shopify_product_variants.variant_id
+      - name: quantity
+        purpose: "Quantity of items in this line item"
+        type: integer
+      - name: discounted_unit_price_amount
+        purpose: "Unit price after discounts (use this for revenue calculations)"
+        type: numeric
+    relationships:
+      - type: many_to_one
+        local_column: order_id
+        foreign_table: public.shopify_orders
+        foreign_column: order_id
+        purpose: "Many line items belong to one order"
+      - type: many_to_one
+        local_column: variant_id
+        foreign_table: public.shopify_product_variants
+        foreign_column: variant_id
+        purpose: "Many line items can reference the same product variant"
+    quirks:
+      - "⚠️ CRITICAL: This table does NOT have 'product_id' column"
+      - "Use 'variant_id' instead, or JOIN with shopify_product_variants to get product_id"
+      - "To get product_id: JOIN public.shopify_product_variants pv ON oli.variant_id = pv.variant_id"
+      - "Revenue calculation: SUM(oli.quantity * oli.discounted_unit_price_amount)"
+    json_columns: []
+  
+  public.shopify_product_variants:
+    purpose: "Product variants - contains product-level information"
+    key_columns:
+      - name: variant_id
+        purpose: "Primary key - unique identifier for each product variant"
+        type: text
+        primary_key: true
+      - name: product_id
+        purpose: "Product identifier - groups variants of the same product"
+        type: text
+      - name: product_title
+        purpose: "Product name/title"
+        type: text
+      - name: sku
+        purpose: "Stock keeping unit identifier"
+        type: text
+      - name: unit_cost_amount
+        purpose: "Cost per unit for profitability calculations"
+        type: numeric
+      - name: selling_price
+        purpose: "Current selling price"
+        type: numeric
+    relationships:
+      - type: one_to_many
+        local_column: variant_id
+        foreign_table: public.shopify_order_line_items
+        foreign_column: variant_id
+        purpose: "One variant can appear in many order line items"
+    quirks:
+      - "product_id is available here - NOT in shopify_order_line_items"
+      - "To get product-level data, JOIN this table using variant_id"
+    json_columns: []
+  
+  public.dw_meta_ads_attribution:
+    purpose: "Meta (Facebook) Ads attribution data - hourly granularity"
+    date_column: date_start
+    key_columns:
+      - name: campaign_id
+        purpose: "Campaign identifier - use for grouping and filtering"
+        type: bigint
+      - name: campaign_name
+        purpose: "Campaign display name"
+        type: text
+      - name: date_start
+        purpose: "Date column for filtering - use this for date range queries"
+        type: date
+        date_column: true
+      - name: hour
+        purpose: "Hour of day (0-23) for hourly granularity"
+        type: integer
+      - name: spend
+        purpose: "Ad spend amount"
+        type: numeric(15,2)
+      - name: clicks
+        purpose: "Number of clicks"
+        type: integer
+      - name: impressions
+        purpose: "Number of impressions"
+        type: integer
+      - name: attributed_orders_revenue
+        purpose: "Revenue attributed to this campaign/hour"
+        type: numeric(15,2)
+    relationships: []
+    quirks:
+      - "Date filtering: WHERE date_start BETWEEN :date_start AND :date_end"
+      - "Has hourly granularity - aggregate by date if daily data needed"
+    json_columns:
+      - name: attributed_orders
+        purpose: "JSONB array of order details - use jsonb_array_elements() to extract"
+        extraction_example: "jsonb_array_elements(attributed_orders) AS order_data"
+      - name: product_details
+        purpose: "JSONB array of product details - use jsonb_array_elements() to extract"
+        extraction_example: "jsonb_array_elements(product_details) AS product_data"
+  
+  public.dw_google_ads_attribution:
+    purpose: "Google Ads attribution data - hourly granularity"
+    date_column: date_start
+    key_columns:
+      - name: campaign_id
+        purpose: "Campaign identifier"
+        type: bigint
+      - name: campaign_name
+        purpose: "Campaign display name"
+        type: text
+      - name: date_start
+        purpose: "Date column for filtering"
+        type: date
+        date_column: true
+      - name: cost_amount
+        purpose: "Ad spend/cost amount (use 'cost_amount', not 'spend')"
+        type: numeric(15,2)
+      - name: clicks
+        purpose: "Number of clicks"
+        type: integer
+      - name: conversions_value
+        purpose: "Revenue/conversion value"
+        type: numeric(15,2)
+    relationships: []
+    quirks:
+      - "Uses 'cost_amount' instead of 'spend' (different from Meta Ads)"
+      - "Date filtering: WHERE date_start BETWEEN :date_start AND :date_end"
+    json_columns:
+      - name: attributed_orders
+        purpose: "JSONB array - use jsonb_array_elements() to extract"
+        extraction_example: "jsonb_array_elements(attributed_orders) AS order_data"
+

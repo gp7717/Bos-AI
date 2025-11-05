@@ -4,6 +4,8 @@ from app.models.schemas import ExecutionPlan, PlanStep, ValidationResult, TaskSp
 from app.services.tool_registry import tool_registry
 from app.services.schema_registry import schema_registry
 from app.services.metric_dictionary import metric_dictionary
+from app.services.system_config import system_config
+from app.models.schemas import SchemaTable
 from app.config.logging_config import get_logger
 import re
 
@@ -71,11 +73,36 @@ class GuardrailAgent:
         # Validate tool exists
         tool_parts = step.tool.split('.')
         if len(tool_parts) < 2:
-            errors.append(f"Invalid tool format in step {step.id}: {step.tool}")
+            # Provide helpful error message with format guidance
+            tool_id = step.tool
+            # Skip excluded tools
+            if system_config.is_tool_excluded(tool_id):
+                errors.append(system_config.get_message('amazon_disabled', tool_id=tool_id))
+                return errors, warnings, suggestions
+            if system_config.is_sql_tool(tool_id):
+                suggested_format = f"{tool_id}.sql"
+                errors.append(
+                    f"Invalid tool format in step {step.id}: {step.tool}. "
+                    f"{system_config.get_message('sql_tool_format', suggested_format=suggested_format)}"
+                )
+            elif system_config.is_compute_tool(tool_id):
+                errors.append(
+                    f"Invalid tool format in step {step.id}: {step.tool}. "
+                    f"{system_config.get_message('compute_tool_format')}"
+                )
+            else:
+                errors.append(
+                    system_config.get_message('invalid_tool_format', step_id=step.id, tool=step.tool)
+                )
             return errors, warnings, suggestions
         
         tool_id = tool_parts[0]
         capability_name = tool_parts[1]
+        
+        # Skip excluded tools
+        if system_config.is_tool_excluded(tool_id):
+            errors.append(system_config.get_message('amazon_disabled', tool_id=tool_id))
+            return errors, warnings, suggestions
         
         tool = tool_registry.get_tool(tool_id)
         if not tool:
@@ -132,6 +159,15 @@ class GuardrailAgent:
         # If raw SQL is provided (LLM-generated), validate it
         if 'sql' in step.inputs:
             sql = step.inputs['sql']
+            
+            # Auto-correct common column mistakes first
+            corrected_sql = self._auto_correct_column_mistakes(sql)
+            if corrected_sql != sql:
+                logger.info(f"🔧 [GUARDRAIL] Auto-corrected SQL in step validation | step_id={step.id}")
+                # Update the step inputs with corrected SQL
+                step.inputs['sql'] = corrected_sql
+                sql = corrected_sql
+            
             sql_errors = self._validate_sql_safety(sql)
             errors.extend(sql_errors)
             
@@ -151,17 +187,14 @@ class GuardrailAgent:
         table_pattern = r'(?:FROM|JOIN|UPDATE|INTO)\s+([a-zA-Z_][a-zA-Z0-9_]*\.?[a-zA-Z_][a-zA-Z0-9_]*)'
         tables = re.findall(table_pattern, sql, re.IGNORECASE)
         
-        # Common incorrect table name mappings
-        table_name_corrections = {
-            'orders': 'public.shopify_orders',
-            'order': 'public.shopify_orders',
-            'sales': 'public.shopify_orders',
-            'products': 'public.shopify_product_variants',
-            'product': 'public.shopify_product_variants',
-            'amazon_ads': 'public.amazon_product_metrics_daily',
-            'meta_ads': 'public.dw_meta_ads_attribution',
-            'google_ads': 'public.dw_google_ads_attribution',
-        }
+        # Get table name corrections from config
+        table_name_corrections = system_config.get_table_name_corrections()
+        
+        # Block excluded table usage
+        for table in tables:
+            if system_config.is_table_excluded(table):
+                errors.append(system_config.get_message('amazon_table_disabled', table=table))
+                logger.error(f"❌ [GUARDRAIL] Excluded table detected and blocked | table={table}")
         
         if tables:
             for table in tables:
@@ -203,11 +236,148 @@ class GuardrailAgent:
                 else:
                     logger.debug(f"✅ [GUARDRAIL] Table validated | table={table}")
         
+        # Auto-correct common column mistakes before validation
+        corrected_sql = self._auto_correct_column_mistakes(sql)
+        if corrected_sql != sql:
+            logger.info(f"🔧 [GUARDRAIL] Auto-corrected SQL before validation | original_length={len(sql)} | corrected_length={len(corrected_sql)}")
+            sql = corrected_sql
+        
+        # Validate columns exist in tables
+        column_errors = self._validate_sql_columns(sql, tables)
+        errors.extend(column_errors)
+        
         # Check for parameterized queries (recommended)
         if ':' not in sql and '%' not in sql:
             warnings.append("SQL query does not appear to use parameterized queries")
         
         return errors, warnings
+    
+    def _validate_sql_columns(self, sql: str, tables: List[str]) -> List[str]:
+        """Validate that columns referenced in SQL actually exist in the tables."""
+        errors = []
+        
+        # Extract column references from SQL (SELECT, WHERE, GROUP BY, ORDER BY, etc.)
+        # Pattern: table_alias.column_name or just column_name
+        column_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*([a-zA-Z_][a-zA-Z0-9_]*)\b'
+        column_matches = re.findall(column_pattern, sql, re.IGNORECASE)
+        
+        # Also find standalone column names (that might be ambiguous)
+        standalone_column_pattern = r'(?:SELECT|WHERE|GROUP BY|ORDER BY|HAVING)\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+        standalone_columns = re.findall(standalone_column_pattern, sql, re.IGNORECASE)
+        
+        # Build table alias map
+        alias_map = {}
+        for table in tables:
+            # Extract alias if present (e.g., "FROM table t" -> alias is "t")
+            table_alias_pattern = rf'\bFROM\s+{re.escape(table)}\s+([a-zA-Z_][a-zA-Z0-9_]*)\b'
+            alias_match = re.search(table_alias_pattern, sql, re.IGNORECASE)
+            if alias_match:
+                alias_map[alias_match.group(1)] = table
+            else:
+                # No alias, use table name as alias
+                table_name = table.split('.')[-1] if '.' in table else table
+                alias_map[table_name] = table
+        
+        # Validate columns with table aliases
+        for alias, column_name in column_matches:
+            if alias not in alias_map:
+                continue  # Skip if alias not found
+            
+            table_name = alias_map[alias]
+            schema, table = table_name.split('.', 1) if '.' in table_name else ('public', table_name)
+            table_def = schema_registry.get_table(schema, table)
+            
+            if table_def:
+                column_names = [col.name.lower() for col in table_def.columns]
+                if column_name.lower() not in column_names:
+                    # Suggest similar columns or related tables
+                    suggestions = self._suggest_column_alternatives(
+                        column_name, table_def, schema, table
+                    )
+                    error_msg = (
+                        f"Column '{column_name}' does not exist in table '{table_name}'. "
+                        f"{suggestions}"
+                    )
+                    errors.append(error_msg)
+                    logger.error(
+                        f"❌ [GUARDRAIL] Invalid column detected | "
+                        f"table={table_name} | "
+                        f"column={column_name} | "
+                        f"available_columns={column_names[:5]}"
+                    )
+        
+        return errors
+    
+    def _suggest_column_alternatives(self, invalid_column: str, table_def: SchemaTable, 
+                                     schema: str, table: str) -> str:
+        """Suggest alternative columns or related tables when column doesn't exist."""
+        suggestions = []
+        
+        # Check if column exists in related tables
+        column_lower = invalid_column.lower()
+        
+        # Common column name patterns
+        if 'order_date' in column_lower:
+            # order_date does not exist - use created_at
+            if 'shopify_orders' in table.lower() or 'orders' in table.lower():
+                suggestions.append(
+                    "The 'order_date' column does not exist in shopify_orders. "
+                    "Use 'created_at' instead: "
+                    "WHERE o.created_at BETWEEN :date_start AND :date_end"
+                )
+        
+        if 'product_id' in column_lower:
+            # product_id is often in related tables, not in order_line_items
+            if 'order_line_items' in table.lower():
+                suggestions.append(
+                    "The 'product_id' column does not exist in shopify_order_line_items. "
+                    "Use 'variant_id' instead, or JOIN with shopify_product_variants table "
+                    "to get product_id: "
+                    "JOIN public.shopify_product_variants pv ON oli.variant_id = pv.variant_id"
+                )
+            elif 'product_variants' in table.lower():
+                suggestions.append("The 'product_id' column exists in shopify_product_variants. "
+                                 "Make sure you're joining correctly.")
+        
+        # Check for similar column names
+        similar_columns = []
+        for col in table_def.columns:
+            col_lower = col.name.lower()
+            # Check for partial matches
+            if any(word in col_lower for word in column_lower.split('_') if len(word) > 3):
+                similar_columns.append(col.name)
+        
+        if similar_columns:
+            suggestions.append(f"Did you mean: {', '.join(similar_columns[:3])}?")
+        
+        # Check foreign keys for related tables
+        if table_def.foreign_keys:
+            suggestions.append(
+                f"Available relationships: {', '.join([fk.get('referred_table', '') for fk in table_def.foreign_keys[:2]])}"
+            )
+        
+        return " ".join(suggestions) if suggestions else "Please check the table schema for available columns."
+    
+    def _auto_correct_column_mistakes(self, sql: str) -> str:
+        """Auto-correct common column name mistakes in SQL."""
+        column_corrections = system_config.get_column_corrections()
+        corrected_sql = sql
+        
+        for correction in column_corrections:
+            pattern = correction.get('pattern')
+            replacement = correction.get('replacement')
+            if pattern and replacement:
+                if re.search(pattern, corrected_sql, re.IGNORECASE):
+                    original = corrected_sql
+                    corrected_sql = re.sub(pattern, replacement, corrected_sql, flags=re.IGNORECASE)
+                    if corrected_sql != original:
+                        logger.info(
+                            f"🔧 [GUARDRAIL] Auto-corrected column | "
+                            f"pattern={pattern} | "
+                            f"description={correction.get('description', '')}"
+                        )
+        
+        return corrected_sql
     
     def _validate_sql_safety(self, sql: str) -> List[str]:
         """Validate SQL for safety (no dangerous operations)."""

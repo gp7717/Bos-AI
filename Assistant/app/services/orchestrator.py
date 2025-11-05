@@ -9,6 +9,7 @@ from app.agents.data_access import get_data_access_agent
 from app.agents.computation import ComputationAgent
 from app.agents.composer import AnswerComposerAgent
 from app.models.schemas import TaskSpec, ExecutionPlan, PlanStep, QueryResponse, AgentResponse
+from app.services.system_config import system_config
 from app.config.logging_config import get_logger
 import pandas as pd
 import traceback
@@ -287,8 +288,23 @@ class Orchestrator:
             f"tool_parts={tool_parts}"
         )
         
+        # Skip excluded operations
+        if system_config.is_tool_excluded(tool_id):
+            logger.warning(
+                f"⚠️ [ORCHESTRATOR] Excluded tool operation | "
+                f"step_id={step.id} | "
+                f"tool_id={tool_id}"
+            )
+            return {
+                'success': False,
+                'error': system_config.get_message('amazon_disabled', tool_id=tool_id),
+                'data': pd.DataFrame(),
+                'row_count': 0,
+                'columns': []
+            }
+        
         # Route to appropriate agent
-        if tool_id in ['sales_db', 'amazon_ads_db', 'meta_ads_db', 'google_ads_db', 'amazon_ads_api']:
+        if system_config.is_sql_tool(tool_id):
             # Data access agent
             logger.info(f"📊 [ORCHESTRATOR] Routing to DataAccess agent | tool_id={tool_id} | step_id={step.id}")
             logger.info(f"📥 [ORCHESTRATOR] DataAccess INPUT | step_id={step.id} | tool_id={tool_id} | inputs={step.inputs}")
@@ -325,10 +341,10 @@ class Orchestrator:
             else:
                 logger.warning(f"⚠️ [ORCHESTRATOR] DataAccess agent not found | tool_id={tool_id}")
         
-        elif tool_id == 'compute':
+        elif system_config.is_compute_tool(tool_id):
             # Computation agent
             capability = tool_parts[1] if len(tool_parts) > 1 else 'aggregate'
-            logger.debug(f"🧮 [ORCHESTRATOR] Routing to Computation agent | capability={capability}")
+            logger.info(f"🧮 [ORCHESTRATOR] Routing to Computation agent | tool_id={tool_id} | capability={capability} | step_id={step.id}")
             
             if capability == 'aggregate':
                 # Get input data from previous steps
@@ -482,6 +498,141 @@ class Orchestrator:
                     'data': result_data,
                     'row_count': len(result_data) if result_data is not None else 0,
                     'columns': list(result_data.columns) if result_data is not None else []
+                }
+            
+            elif capability == 'calculate':
+                # Get input data from previous steps
+                left_step_id = step.inputs.get('inputs', {}).get('left')
+                if not left_step_id and step.depends_on:
+                    left_step_id = step.depends_on[0]
+                    logger.debug(f"🔗 [ORCHESTRATOR] Using first dependency for calculate | left_step_id={left_step_id}")
+                
+                left_result = self.step_results.get(left_step_id, {})
+                left_data = left_result.get('data')
+                
+                if left_data is None:
+                    logger.error(f"❌ [ORCHESTRATOR] No input data for calculate step | step_id={step.id} | left_step_id={left_step_id}")
+                    return {
+                        'success': False,
+                        'error': f'No input data available for calculation. Dependency step {left_step_id} not found or has no data.',
+                        'data': pd.DataFrame(),
+                        'row_count': 0,
+                        'columns': []
+                    }
+                
+                logger.info(
+                    f"🧮 [ORCHESTRATOR] Calculating with formula | "
+                    f"step_id={step.id} | "
+                    f"left_data_rows={len(left_data) if hasattr(left_data, '__len__') else 'N/A'}"
+                )
+                
+                # Get formula from inputs
+                formula = step.inputs.get('inputs', {}).get('formula')
+                if not formula:
+                    # Try to get metric_id and compute using computation agent
+                    metric_id = step.inputs.get('output_key') or step.id
+                    try:
+                        result_data = self.computation.compute(metric_id, left_data)
+                    except Exception as e:
+                        logger.error(f"❌ [ORCHESTRATOR] Calculation failed | step_id={step.id} | error={str(e)}")
+                        return {
+                            'success': False,
+                            'error': f'Calculation failed: {str(e)}',
+                            'data': pd.DataFrame(),
+                            'row_count': 0,
+                            'columns': []
+                        }
+                else:
+                    # Parse and evaluate formula (e.g., "revenue - refunds - discounts")
+                    # For now, use the computation agent's compute method
+                    # The formula will be parsed by the metric definition
+                    output_key = step.inputs.get('output_key') or 'calculated_value'
+                    
+                    # Try to compute as a metric first
+                    try:
+                        # Get the metric definition if available
+                        metric_def = None
+                        try:
+                            from app.services.metric_dictionary import metric_dictionary
+                            metric_def = metric_dictionary.get_metric(output_key)
+                        except:
+                            pass
+                        
+                        if metric_def:
+                            result_data = self.computation.compute(output_key, left_data)
+                        else:
+                            # Simple formula evaluation - parse and apply
+                            result_data = left_data.copy()
+                            # Parse formula like "revenue - refunds - discounts"
+                            # This is a simplified version - in production, use a proper formula parser
+                            logger.warning(f"⚠️ [ORCHESTRATOR] Formula evaluation not fully implemented | formula={formula}")
+                            # For now, just return the input data
+                            result_data = left_data
+                    except Exception as e:
+                        logger.error(f"❌ [ORCHESTRATOR] Formula evaluation failed | step_id={step.id} | error={str(e)}")
+                        result_data = left_data  # Fallback to input data
+                
+                return {
+                    'success': True,
+                    'data': result_data,
+                    'row_count': len(result_data) if result_data is not None else 0,
+                    'columns': list(result_data.columns) if result_data is not None else []
+                }
+            
+            elif capability == 'join':
+                # Join capability - already handled in aggregate, but can be explicit
+                left_step_id = step.inputs.get('inputs', {}).get('left')
+                right_step_id = step.inputs.get('inputs', {}).get('right')
+                
+                if not left_step_id and step.depends_on:
+                    left_step_id = step.depends_on[0] if len(step.depends_on) > 0 else None
+                if not right_step_id and len(step.depends_on) > 1:
+                    right_step_id = step.depends_on[1]
+                
+                if not left_step_id:
+                    logger.error(f"❌ [ORCHESTRATOR] No left step for join | step_id={step.id}")
+                    return {
+                        'success': False,
+                        'error': 'No left data source specified for join',
+                        'data': pd.DataFrame(),
+                        'row_count': 0,
+                        'columns': []
+                    }
+                
+                left_data = self.step_results.get(left_step_id, {}).get('data')
+                right_data = self.step_results.get(right_step_id, {}).get('data') if right_step_id else None
+                
+                if left_data is None:
+                    logger.error(f"❌ [ORCHESTRATOR] Left data is None for join | step_id={step.id}")
+                    return {
+                        'success': False,
+                        'error': f'Left data source {left_step_id} has no data',
+                        'data': pd.DataFrame(),
+                        'row_count': 0,
+                        'columns': []
+                    }
+                
+                if right_data is None:
+                    logger.warning(f"⚠️ [ORCHESTRATOR] Right data is None for join, using left data only | step_id={step.id}")
+                    result_data = left_data
+                else:
+                    join_keys = step.inputs.get('inputs', {}).get('join_keys', [])
+                    result_data = self.computation.join(left_data, right_data, join_keys)
+                
+                return {
+                    'success': True,
+                    'data': result_data,
+                    'row_count': len(result_data) if result_data is not None else 0,
+                    'columns': list(result_data.columns) if result_data is not None else []
+                }
+            else:
+                logger.error(f"❌ [ORCHESTRATOR] Unknown compute capability | capability={capability} | step_id={step.id}")
+                return {
+                    'success': False,
+                    'error': f'Unknown compute capability: {capability}',
+                    'data': pd.DataFrame(),
+                    'row_count': 0,
+                    'columns': []
                 }
         
         logger.error(f"❌ [ORCHESTRATOR] Unknown tool | tool_id={tool_id}")

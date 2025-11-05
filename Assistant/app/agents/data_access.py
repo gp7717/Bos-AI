@@ -5,6 +5,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from app.config.settings import settings
 from app.services.schema_registry import schema_registry
+from app.services.system_config import system_config
 from app.config.logging_config import get_logger
 import pandas as pd
 import httpx
@@ -36,11 +37,14 @@ class SalesDBAgent(DataAccessAgent):
         self.engine = create_engine(settings.database_url, pool_pre_ping=True)
         
         # Get schema information from registry
-        self.table_schema = schema_registry.get_table('public', 'shopify_orders')
-        if self.table_schema:
-            logger.info(f"✅ [SALES_DB] Schema loaded | table=shopify_orders | columns={len(self.table_schema.columns)}")
-        else:
-            logger.warning(f"⚠️ [SALES_DB] Schema not found for shopify_orders, using hardcoded schema")
+        primary_table = system_config.get_tool_primary_table(self.tool_id)
+        if primary_table:
+            schema, table_name = primary_table.split('.', 1)
+            self.table_schema = schema_registry.get_table(schema, table_name)
+            if self.table_schema:
+                logger.info(f"✅ [SALES_DB] Schema loaded | table={table_name} | columns={len(self.table_schema.columns)}")
+            else:
+                logger.warning(f"⚠️ [SALES_DB] Schema not found for {primary_table}")
     
     def execute(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Execute sales database query."""
@@ -58,7 +62,7 @@ class SalesDBAgent(DataAccessAgent):
             sql = inputs['sql']
             params = inputs.get('params', {})
             
-            # Auto-correct common table name mistakes
+            # Auto-correct common table name and column mistakes
             sql = self._correct_table_names(sql)
             
             logger.info(
@@ -94,12 +98,27 @@ class SalesDBAgent(DataAccessAgent):
                 'columns': list(result.columns)
             }
         except Exception as e:
+            error_str = str(e)
             logger.error(
                 f"❌ [SALES_DB] Query execution failed | "
-                f"error={str(e)} | "
+                f"error={error_str} | "
                 f"sql={sql[:200]}...",
                 exc_info=True
             )
+            
+            # Provide helpful error messages for common issues
+            if 'does not exist' in error_str or 'UndefinedColumn' in error_str:
+                # Extract column name from error
+                import re
+                column_match = re.search(r"column\s+['\"]?([a-zA-Z_][a-zA-Z0-9_]*)['\"]?\s+does not exist", error_str, re.IGNORECASE)
+                if column_match:
+                    column_name = column_match.group(1)
+                    suggestion = self._suggest_column_fix(column_name, sql)
+                    if suggestion:
+                        error_msg = f"{error_str}\n\n💡 Suggestion: {suggestion}"
+                        logger.info(f"💡 [SALES_DB] Column fix suggestion | column={column_name} | suggestion={suggestion}")
+                        raise ValueError(error_msg) from e
+            
             raise
     
     def _build_query(self, inputs: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
@@ -190,37 +209,86 @@ class SalesDBAgent(DataAccessAgent):
         return base_query, params
     
     def _correct_table_names(self, sql: str) -> str:
-        """Auto-correct common table name mistakes in SQL."""
+        """Auto-correct common table name and column mistakes in SQL."""
         import re
         
-        # Table name corrections - only apply to unqualified table names
-        corrections = {
-            r'\bFROM\s+orders\b': 'FROM public.shopify_orders',
-            r'\bFROM\s+order\b': 'FROM public.shopify_orders',
-            r'\bFROM\s+sales\b': 'FROM public.shopify_orders',
-            r'\bJOIN\s+orders\b': 'JOIN public.shopify_orders',
-            r'\bJOIN\s+order\b': 'JOIN public.shopify_orders',
-            r'\bJOIN\s+sales\b': 'JOIN public.shopify_orders',
-            r'\bFROM\s+products\b': 'FROM public.shopify_product_variants',
-            r'\bJOIN\s+products\b': 'JOIN public.shopify_product_variants',
-        }
+        # Get SQL corrections from config
+        sql_corrections = system_config.get_sql_corrections()
+        column_corrections = system_config.get_column_corrections()
         
         corrected_sql = sql
-        for pattern, replacement in corrections.items():
-            # Only replace if the table is not already qualified (doesn't have a dot)
-            if re.search(pattern, corrected_sql, re.IGNORECASE):
-                # Check if already qualified
-                match = re.search(pattern, corrected_sql, re.IGNORECASE)
-                if match and '.' not in match.group(0):
+        
+        # Apply table name corrections
+        for correction in sql_corrections:
+            pattern = correction.get('pattern')
+            replacement = correction.get('replacement')
+            if pattern and replacement:
+                # Only replace if the table is not already qualified (doesn't have a dot)
+                if re.search(pattern, corrected_sql, re.IGNORECASE):
+                    # Check if already qualified
+                    match = re.search(pattern, corrected_sql, re.IGNORECASE)
+                    if match and '.' not in match.group(0):
+                        corrected_sql = re.sub(pattern, replacement, corrected_sql, flags=re.IGNORECASE)
+        
+        # Apply column name corrections
+        for correction in column_corrections:
+            pattern = correction.get('pattern')
+            replacement = correction.get('replacement')
+            description = correction.get('description', '')
+            if pattern and replacement:
+                if re.search(pattern, corrected_sql, re.IGNORECASE):
+                    original_sql = corrected_sql
+                    # Use regex replacement with backreferences
                     corrected_sql = re.sub(pattern, replacement, corrected_sql, flags=re.IGNORECASE)
+                    if corrected_sql != original_sql:
+                        logger.warning(
+                            f"⚠️ [SALES_DB] Auto-corrected column name | "
+                            f"pattern={pattern} | "
+                            f"description={description}"
+                        )
         
         if corrected_sql != sql:
             logger.warning(
-                f"⚠️ [SALES_DB] Auto-corrected table names in SQL | "
+                f"⚠️ [SALES_DB] Auto-corrected SQL | "
                 f"original={sql[:150]}... | corrected={corrected_sql[:150]}..."
             )
         
         return corrected_sql
+    
+    def _suggest_column_fix(self, invalid_column: str, sql: str) -> Optional[str]:
+        """Suggest fixes for invalid column names."""
+        suggestions = []
+        column_lower = invalid_column.lower()
+        
+        # Check which table is being queried
+        if 'order_line_items' in sql.lower() or 'oli' in sql.lower():
+            if 'product_id' in column_lower:
+                suggestions.append(
+                    "The 'product_id' column does not exist in shopify_order_line_items. "
+                    "Use 'variant_id' instead, or JOIN with shopify_product_variants to get product_id:\n"
+                    "JOIN public.shopify_product_variants pv ON oli.variant_id = pv.variant_id\n"
+                    "Then use: pv.product_id"
+                )
+        
+        # Check for date column issues
+        if 'order_date' in column_lower:
+            suggestions.append(
+                "The 'order_date' column does not exist in shopify_orders. "
+                "Use 'created_at' instead: "
+                "WHERE o.created_at BETWEEN :date_start AND :date_end"
+            )
+        
+        # Get actual columns from schema
+        if 'order_line_items' in sql.lower():
+            table_def = schema_registry.get_table('public', 'shopify_order_line_items')
+            if table_def:
+                available_columns = [col.name for col in table_def.columns]
+                # Find similar columns
+                similar = [col for col in available_columns if any(word in col.lower() for word in column_lower.split('_') if len(word) > 3)]
+                if similar:
+                    suggestions.append(f"Similar columns available: {', '.join(similar[:3])}")
+        
+        return "\n".join(suggestions) if suggestions else None
 
 
 class AmazonAdsDBAgent(DataAccessAgent):
@@ -368,16 +436,18 @@ class MetaAdsDBAgent(DataAccessAgent):
     def _correct_table_names(self, sql: str) -> str:
         """Auto-correct common table name mistakes in SQL."""
         import re
-        corrections = {
-            r'\bFROM\s+meta_ads\b': 'FROM public.dw_meta_ads_attribution',
-            r'\bJOIN\s+meta_ads\b': 'JOIN public.dw_meta_ads_attribution',
-        }
+        # Get SQL corrections from config
+        sql_corrections = system_config.get_sql_corrections()
+        
         corrected_sql = sql
-        for pattern, replacement in corrections.items():
-            if re.search(pattern, corrected_sql, re.IGNORECASE):
-                match = re.search(pattern, corrected_sql, re.IGNORECASE)
-                if match and '.' not in match.group(0):
-                    corrected_sql = re.sub(pattern, replacement, corrected_sql, flags=re.IGNORECASE)
+        for correction in sql_corrections:
+            pattern = correction.get('pattern')
+            replacement = correction.get('replacement')
+            if pattern and replacement:
+                if re.search(pattern, corrected_sql, re.IGNORECASE):
+                    match = re.search(pattern, corrected_sql, re.IGNORECASE)
+                    if match and '.' not in match.group(0):
+                        corrected_sql = re.sub(pattern, replacement, corrected_sql, flags=re.IGNORECASE)
         if corrected_sql != sql:
             logger.warning(f"⚠️ [META_ADS_DB] Auto-corrected table names | original={sql[:100]}... | corrected={corrected_sql[:100]}...")
         return corrected_sql
@@ -515,11 +585,14 @@ class AmazonAdsAPIAgent(DataAccessAgent):
 # Factory function
 def get_data_access_agent(tool_id: str) -> Optional[DataAccessAgent]:
     """Get appropriate data access agent for tool."""
+    # Skip excluded agents
+    if system_config.is_tool_excluded(tool_id):
+        logger.warning(f"⚠️ [DATA_ACCESS] Excluded tool | tool_id={tool_id}")
+        return None
+    
     agents = {
         'sales_db': SalesDBAgent,
-        'amazon_ads_db': AmazonAdsDBAgent,
         'meta_ads_db': MetaAdsDBAgent,
-        'amazon_ads_api': AmazonAdsAPIAgent,
     }
     
     agent_class = agents.get(tool_id)
