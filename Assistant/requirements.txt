@@ -1,6 +1,6 @@
 # Core Framework
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
+fastapi>=0.115.0  # Updated to support anyio>=4.5 for mcp compatibility
+uvicorn[standard]>=0.30.0  # Updated to support anyio>=4.5
 pydantic>=2.12.0  # Updated for openai>=2.6.1 compatibility
 pydantic-settings>=2.1.0
 
@@ -12,7 +12,11 @@ alembic==1.12.1
 
 # LLM Integration
 openai>=2.6.1  # Supports both OpenAI and Azure OpenAI (v2.x)
-# Note: langchain removed - using AzureOpenAI directly
+langchain>=0.1.0
+langchain-openai>=0.0.5
+langchain-community>=0.0.20
+langgraph>=0.0.20
+langsmith>=0.0.80
 
 # Vector Store & Memory
 pgvector==0.2.4
@@ -39,8 +43,11 @@ pytz==2023.3
 pandas==2.1.3
 numpy==1.26.2
 pyyaml==6.0.1
-httpx==0.25.2
+httpx>=0.27.1,<1.0.0  # Updated to support mcp (requires >=0.27.1) while satisfying openai (<1.0.0)
 tenacity==8.2.3
+
+# MCP (Model Context Protocol)
+mcp>=1.0.0
 
 # Testing
 pytest==7.4.3

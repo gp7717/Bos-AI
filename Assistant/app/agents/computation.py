@@ -17,6 +17,17 @@ class ComputationAgent:
     
     def compute(self, metric_id: str, data: pd.DataFrame, **kwargs) -> pd.DataFrame:
         """Compute a metric from data."""
+        import time
+        start_time = time.time()
+        
+        logger.info(
+            f"📥 [COMPUTATION] Input | "
+            f"metric_id={metric_id} | "
+            f"input_rows={len(data)} | "
+            f"input_columns={list(data.columns) if len(data) > 0 else []} | "
+            f"kwargs={kwargs}"
+        )
+        
         logger.info(
             f"🧮 [COMPUTATION] Computing metric | "
             f"metric_id={metric_id} | input_rows={len(data)} | "
@@ -52,6 +63,16 @@ class ComputationAgent:
                     f"metric_id={metric_id} | input_rows={len(data)} | "
                     f"computation_type={metric_def.computation_type}"
                 )
+            
+            # Log outputs
+            execution_time_ms = (time.time() - start_time) * 1000
+            logger.info(
+                f"📤 [COMPUTATION] Output | "
+                f"metric_id={metric_id} | "
+                f"result_rows={len(result)} | "
+                f"result_columns={list(result.columns)} | "
+                f"execution_time_ms={execution_time_ms:.2f}"
+            )
             
             return result
         except Exception as e:
@@ -266,6 +287,17 @@ class ComputationAgent:
     def aggregate(self, data: pd.DataFrame, group_by: List[str], 
                   aggregations: Dict[str, str]) -> pd.DataFrame:
         """Aggregate data by groups."""
+        import time
+        start_time = time.time()
+        
+        logger.info(
+            f"📥 [COMPUTATION] Input | "
+            f"input_rows={len(data)} | "
+            f"input_columns={list(data.columns)} | "
+            f"group_by={group_by} | "
+            f"aggregations={aggregations}"
+        )
+        
         logger.info(
             f"📊 [COMPUTATION] Aggregating data | "
             f"input_rows={len(data)} | group_by={group_by} | "
@@ -310,6 +342,69 @@ class ComputationAgent:
         logger.info(
             f"✅ [COMPUTATION] Aggregation completed | "
             f"result_rows={len(result)} | input_rows={len(data)}"
+        )
+        
+        # Log outputs
+        execution_time_ms = (time.time() - start_time) * 1000
+        logger.info(
+            f"📤 [COMPUTATION] Output | "
+            f"result_rows={len(result)} | "
+            f"result_columns={list(result.columns)} | "
+            f"execution_time_ms={execution_time_ms:.2f}"
+        )
+        
+        return result
+    
+    def top_n(self, data: pd.DataFrame, sort_by: List[str], limit: int, ascending: bool = False) -> pd.DataFrame:
+        """Get top N rows sorted by specified columns."""
+        import time
+        start_time = time.time()
+        
+        logger.info(
+            f"📥 [COMPUTATION] Input | "
+            f"input_rows={len(data)} | "
+            f"input_columns={list(data.columns)} | "
+            f"sort_by={sort_by} | limit={limit} | ascending={ascending}"
+        )
+        
+        logger.info(
+            f"🔝 [COMPUTATION] Getting top N | "
+            f"input_rows={len(data)} | sort_by={sort_by} | limit={limit} | ascending={ascending}"
+        )
+        
+        if data.empty:
+            logger.warning(f"⚠️ [COMPUTATION] Input data is empty for top_n operation")
+            return data
+        
+        # Validate sort_by columns exist
+        missing_cols = [col for col in sort_by if col not in data.columns]
+        if missing_cols:
+            logger.warning(
+                f"⚠️ [COMPUTATION] Sort columns not found | "
+                f"missing={missing_cols} | available={list(data.columns)}"
+            )
+            # Remove missing columns
+            sort_by = [col for col in sort_by if col in data.columns]
+        
+        if not sort_by:
+            logger.warning(f"⚠️ [COMPUTATION] No valid sort columns, returning first {limit} rows")
+            return data.head(limit)
+        
+        # Sort and limit
+        result = data.sort_values(by=sort_by, ascending=ascending).head(limit)
+        
+        logger.info(
+            f"✅ [COMPUTATION] Top N completed | "
+            f"result_rows={len(result)} | input_rows={len(data)}"
+        )
+        
+        # Log outputs
+        execution_time_ms = (time.time() - start_time) * 1000
+        logger.info(
+            f"📤 [COMPUTATION] Output | "
+            f"result_rows={len(result)} | "
+            f"result_columns={list(result.columns)} | "
+            f"execution_time_ms={execution_time_ms:.2f}"
         )
         
         return result

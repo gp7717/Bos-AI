@@ -38,6 +38,23 @@ async def startup():
     logger.info(f"🤖 Azure OpenAI Deployment: {settings.azure_openai_deployment_name}")
     logger.info(f"🌐 Azure OpenAI Endpoint: {settings.azure_openai_endpoint}")
     logger.info(f"⚙️ Log Level: {settings.log_level}")
+    
+    # Initialize MCP database server and client
+    try:
+        from app.services.mcp_database_server import get_mcp_server
+        from app.services.mcp_database_client import get_mcp_client
+        
+        # Initialize server (creates connection pool)
+        mcp_server = get_mcp_server()
+        logger.info("✅ MCP Database Server initialized")
+        
+        # Initialize client
+        mcp_client = get_mcp_client()
+        logger.info("✅ MCP Database Client initialized")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize MCP server/client | error={str(e)}", exc_info=True)
+        raise
+    
     logger.info("✅ Application startup complete")
 
 

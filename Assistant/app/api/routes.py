@@ -2,7 +2,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Header
 from typing import Optional
 from app.models.schemas import QueryRequest, QueryResponse
-from app.services.orchestrator import Orchestrator
+from app.services.orchestrator_v2 import OrchestratorV2
 from app.services.policy import PolicyLayer
 from app.services.cache import CacheService
 from app.config.logging_config import get_logger
@@ -11,7 +11,7 @@ import time
 logger = get_logger(__name__)
 
 router = APIRouter()
-orchestrator = Orchestrator()
+orchestrator = OrchestratorV2()  # Use new LangGraph-based orchestrator
 policy_layer = PolicyLayer()
 cache_service = CacheService()
 

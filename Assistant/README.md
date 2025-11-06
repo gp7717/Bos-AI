@@ -4,16 +4,20 @@ A production-ready agentic assistant system for analytics queries across multipl
 
 ## Architecture
 
-The system follows a hub-and-spokes architecture with specialized agents:
+The system follows a modular architecture using **LangChain** and **LangGraph**:
 
 - **API Gateway**: Single entry point with auth, rate limiting, and request tracking
-- **Orchestrator**: Main conductor implementing ReAct/Plan-&-Execute pattern
-- **Router Agent**: Intent classification and slot extraction
-- **Planner Agent**: Converts task specs into execution DAGs
+- **LangGraph Orchestrator**: State-based orchestration using LangGraph
+- **Modular Agents**: Plug-and-play agents built with LangChain
+  - **Router Agent V2**: Intent classification and slot extraction
+  - **Planner Agent V2**: Execution plan generation
+  - **Composer Agent V2**: Natural language answer generation
+- **LangChain Tools**: Reusable tools for data access and computation
 - **Data Access Agents**: Domain-specific agents (Ads, Sales, Amazon)
 - **Guardrail Agent**: Validation and safety checks
 - **Computation Agent**: Metric calculations and aggregations
-- **Answer Composer**: Natural language answer generation
+
+See [MODULAR_ARCHITECTURE.md](docs/MODULAR_ARCHITECTURE.md) for details on the new architecture.
 
 ## Shared Services
 
@@ -65,13 +69,18 @@ curl -X POST http://localhost:8000/api/v1/query \
 ```
 .
 ├── app/
-│   ├── agents/          # Core agent implementations
-│   ├── services/        # Shared services
+│   ├── agents/          # Legacy agent implementations (still in use)
+│   ├── agents_v2/       # LangChain-based agents (router, planner, composer)
+│   ├── core/            # Base classes and agent registry
+│   ├── tools/           # LangChain tools for data access and computation
+│   ├── graph/           # LangGraph state graph for orchestration
+│   ├── services/        # Shared services (orchestrator_v2, etc.)
 │   ├── models/          # Pydantic models
 │   ├── config/          # Configuration
 │   ├── api/             # FastAPI routes
 │   └── main.py          # Application entry point
 ├── config/              # YAML configuration files
+├── docs/                # Documentation (including MODULAR_ARCHITECTURE.md)
 ├── tests/               # Test suite
 ├── schema.sql           # Database schema
 └── requirements.txt     # Python dependencies

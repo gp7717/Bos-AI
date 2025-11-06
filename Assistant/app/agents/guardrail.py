@@ -111,15 +111,29 @@ class GuardrailAgent:
             return errors, warnings, suggestions
         
         # For SQL tools, capabilities are implicit (any capability name is allowed)
-        # For other tools (api, compute), validate that capability exists
+        # For compute tools, allow common capabilities even if not in registry
+        # For other tools (api), validate that capability exists
         if tool.kind == 'sql':
             logger.debug(f"✅ [GUARDRAIL] SQL tool validated | step_id={step.id} | tool_id={tool_id} | capability={capability_name}")
             # SQL tools don't have explicit capabilities - validate SQL safety instead
             sql_errors, sql_warnings = self._validate_sql_step(step)
             errors.extend(sql_errors)
             warnings.extend(sql_warnings)
+        elif tool.kind == 'compute':
+            # For compute tools, allow standard capabilities: aggregate, join, calculate, filter
+            valid_compute_capabilities = ['aggregate', 'join', 'calculate', 'filter']
+            if capability_name in valid_compute_capabilities:
+                logger.debug(f"✅ [GUARDRAIL] Compute capability validated | step_id={step.id} | tool_id={tool_id} | capability={capability_name}")
+            else:
+                # Check if it exists in registry
+                capability = tool_registry.get_capability(tool_id, capability_name)
+                if not capability:
+                    logger.debug(f"❌ [GUARDRAIL] Unknown compute capability | step_id={step.id} | tool_id={tool_id} | capability={capability_name}")
+                    errors.append(f"Unknown capability in step {step.id}: {capability_name}. Valid compute capabilities: {', '.join(valid_compute_capabilities)}")
+                    return errors, warnings, suggestions
+                logger.debug(f"✅ [GUARDRAIL] Compute capability validated (from registry) | step_id={step.id} | tool_id={tool_id} | capability={capability_name}")
         else:
-            # Validate capability exists for non-SQL tools
+            # Validate capability exists for non-SQL, non-compute tools (e.g., API tools)
             capability = tool_registry.get_capability(tool_id, capability_name)
             if not capability:
                 logger.debug(f"❌ [GUARDRAIL] Unknown capability | step_id={step.id} | tool_id={tool_id} | capability={capability_name}")
@@ -168,8 +182,9 @@ class GuardrailAgent:
                 step.inputs['sql'] = corrected_sql
                 sql = corrected_sql
             
-            sql_errors = self._validate_sql_safety(sql)
+            sql_errors, sql_warnings = self._validate_sql_safety(sql)
             errors.extend(sql_errors)
+            warnings.extend(sql_warnings)
             
             # Validate SQL against schema
             schema_errors, schema_warnings = self._validate_sql_against_schema(sql, step)
@@ -379,9 +394,10 @@ class GuardrailAgent:
         
         return corrected_sql
     
-    def _validate_sql_safety(self, sql: str) -> List[str]:
-        """Validate SQL for safety (no dangerous operations)."""
+    def _validate_sql_safety(self, sql: str) -> tuple[List[str], List[str]]:
+        """Validate SQL for safety (no dangerous operations). Returns (errors, warnings)."""
         errors = []
+        warnings = []
         sql_upper = sql.upper()
         
         # Block dangerous operations
@@ -399,11 +415,11 @@ class GuardrailAgent:
             if re.search(pattern, sql_upper):
                 errors.append(f"SQL safety violation: {message}")
         
-        # Warn about SELECT * (but don't block)
+        # Warn about SELECT * (but don't block - use warning for testing)
         if re.search(r'SELECT\s+\*', sql_upper):
-            errors.append("SQL warning: SELECT * should be avoided in production")
+            warnings.append("SQL warning: SELECT * should be avoided in production")
         
-        return errors
+        return errors, warnings
     
     def _validate_date_range(self, start: str, end: str) -> tuple:
         """Validate date range is reasonable."""

@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 60
     rate_limit_burst: int = 100
     
+    # MCP Database Server
+    mcp_server_timeout: int = 30  # Timeout in seconds for MCP server operations
+    mcp_schema_cache_ttl: int = 300  # Schema cache TTL in seconds
+    
     class Config:
         env_file = ".env"
         case_sensitive = False

@@ -155,3 +155,131 @@ class AgentResponse(BaseModel):
     error: Optional[str] = None
     metadata: Dict[str, Any] = {}
 
+
+# ============================================================================
+# Agent Input/Output Schemas - Typed Contracts for Agent Communication
+# ============================================================================
+
+class RouterAgentInput(BaseModel):
+    """Input schema for Router Agent."""
+    query: str = Field(description="User's natural language query")
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
+    context: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+
+class RouterAgentOutput(BaseModel):
+    """Output schema for Router Agent."""
+    success: bool
+    task_spec: Optional[TaskSpec] = None
+    error: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class PlannerAgentInput(BaseModel):
+    """Input schema for Planner Agent."""
+    task_spec: TaskSpec = Field(description="Task specification from router")
+    context: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+
+class PlannerAgentOutput(BaseModel):
+    """Output schema for Planner Agent."""
+    success: bool
+    plan: Optional[ExecutionPlan] = None
+    error: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class GuardrailAgentInput(BaseModel):
+    """Input schema for Guardrail Agent."""
+    task_spec: Optional[TaskSpec] = None
+    plan: Optional[ExecutionPlan] = None
+    validation_type: Literal["task", "plan"] = Field(description="Type of validation to perform")
+
+
+class GuardrailAgentOutput(BaseModel):
+    """Output schema for Guardrail Agent."""
+    success: bool
+    is_valid: bool
+    errors: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    suggestions: List[str] = Field(default_factory=list)
+    corrected_plan: Optional[ExecutionPlan] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class DataAccessAgentInput(BaseModel):
+    """Input schema for Data Access Agents."""
+    sql: Optional[str] = Field(None, description="LLM-generated SQL query")
+    params: Dict[str, Any] = Field(default_factory=dict, description="SQL parameters")
+    inputs: Dict[str, Any] = Field(default_factory=dict, description="Template-based query inputs")
+
+
+class DataAccessAgentOutput(BaseModel):
+    """Output schema for Data Access Agents."""
+    success: bool
+    data: List[Dict[str, Any]] = Field(default_factory=list, description="Query results as list of records")
+    row_count: int = 0
+    columns: List[str] = Field(default_factory=list)
+    error: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ComputationAgentInput(BaseModel):
+    """Input schema for Computation Agent."""
+    operation: Literal["compute", "aggregate", "join", "calculate", "top_n"] = Field(description="Operation type")
+    metric_id: Optional[str] = Field(None, description="Metric ID for compute operation (must be from metric dictionary)")
+    data: Optional[Any] = Field(None, description="Input data (DataFrame or list of dicts)")
+    left_data: Optional[Any] = Field(None, description="Left data for join operation")
+    right_data: Optional[Any] = Field(None, description="Right data for join operation")
+    group_by: Optional[List[str]] = Field(None, description="Columns to group by for aggregation")
+    aggregations: Optional[Dict[str, str]] = Field(None, description="Aggregation functions")
+    join_keys: Optional[List[str]] = Field(None, description="Join keys for join operation")
+    how: str = Field("left", description="Join type")
+    sort_by: Optional[List[str]] = Field(None, description="Columns to sort by for top_n operation")
+    ascending: Optional[bool] = Field(True, description="Sort order for top_n operation")
+    limit: Optional[int] = Field(None, description="Limit for top_n operation")
+    kwargs: Dict[str, Any] = Field(default_factory=dict, description="Additional parameters")
+
+
+class ComputationAgentOutput(BaseModel):
+    """Output schema for Computation Agent."""
+    success: bool
+    data: Optional[Any] = Field(None, description="Result data (DataFrame)")
+    row_count: int = 0
+    columns: List[str] = Field(default_factory=list)
+    error: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ComposerAgentInput(BaseModel):
+    """Input schema for Composer Agent."""
+    task_spec: TaskSpec = Field(description="Original task specification")
+    results: Dict[str, Any] = Field(description="Execution results")
+    execution_trace: Optional[str] = None
+    context: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+
+class ComposerAgentOutput(BaseModel):
+    """Output schema for Composer Agent."""
+    success: bool
+    response: Optional[QueryResponse] = None
+    error: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class PlanStepExecutionInput(BaseModel):
+    """Input schema for plan step execution."""
+    step: PlanStep = Field(description="Plan step to execute")
+    step_results: Dict[str, Any] = Field(description="Results from previous steps")
+
+
+class PlanStepExecutionOutput(BaseModel):
+    """Output schema for plan step execution."""
+    success: bool
+    data: Optional[Any] = Field(None, description="Step execution result (DataFrame)")
+    row_count: int = 0
+    columns: List[str] = Field(default_factory=list)
+    error: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
