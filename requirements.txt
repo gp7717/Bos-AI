@@ -1,61 +1,60 @@
 # Core Framework
-fastapi>=0.115.0  # Updated to support anyio>=4.5 for mcp compatibility
-uvicorn[standard]>=0.30.0  # Updated to support anyio>=4.5
-pydantic>=2.12.0  # Updated for openai>=2.6.1 compatibility
-pydantic-settings>=2.1.0
+fastapi>=0.115.2
+uvicorn[standard]>=0.32.0
+pydantic>=2.12.0,<2.13.0
+pydantic-settings>=2.5.2
 
 # Database
-sqlalchemy==2.0.23
-psycopg2-binary==2.9.9
-asyncpg==0.29.0
-alembic==1.12.1
+sqlalchemy==2.0.36
+psycopg2-binary==2.9.10
+asyncpg==0.30.0
+alembic==1.13.3
 
 # LLM Integration
-openai>=2.6.1  # Supports both OpenAI and Azure OpenAI (v2.x)
-langchain>=0.1.0
-langchain-openai>=0.0.5
-langchain-community>=0.0.20
-langgraph>=0.0.20
-langsmith>=0.0.80
+openai>=2.6.1,<2.7.0
+langchain>=0.3.0,<0.4.0
+langchain-openai>=0.2.0
+langchain-community>=0.3.0
+langgraph>=0.2.0,<0.3.0
+langsmith>=0.1.0
 
 # Vector Store & Memory
-pgvector==0.2.4
-chromadb==0.4.18
+pgvector==0.3.0
+chromadb==0.5.11
 
 # Observability
-opentelemetry-api==1.21.0
-opentelemetry-sdk==1.21.0
-opentelemetry-instrumentation-fastapi==0.42b0
-opentelemetry-exporter-jaeger==1.21.0
+opentelemetry-api==1.38.0
+opentelemetry-sdk==1.38.0
+opentelemetry-instrumentation-fastapi==0.59b0
+opentelemetry-exporter-otlp==1.38.0  # Recommended replacement for jaeger (use OTLP)
 
 # Caching & State
-redis==5.0.1
-hiredis==2.2.3
+redis==5.1.1
+hiredis==3.0.0
 
 # Security & Auth
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
-python-multipart==0.0.6
+python-multipart==0.0.9
 
 # Utilities
-python-dateutil==2.8.2
-pytz==2023.3
-pandas==2.1.3
-numpy==1.26.2
-pyyaml==6.0.1
-httpx>=0.27.1,<1.0.0  # Updated to support mcp (requires >=0.27.1) while satisfying openai (<1.0.0)
-tenacity==8.2.3
+python-dateutil==2.9.0
+pytz==2024.2
+pandas==2.2.3
+numpy==2.1.2
+pyyaml==6.0.2
+httpx>=0.27.2,<1.0.0
+tenacity==9.0.0
 
 # MCP (Model Context Protocol)
-mcp>=1.0.0
+mcp>=1.2.0
 
 # Testing
-pytest==7.4.3
-pytest-asyncio==0.21.1
-pytest-mock==3.12.0
+pytest==8.3.3
+pytest-asyncio==0.24.0
+pytest-mock==3.14.0
 
 # Development
-black==23.11.0
-ruff==0.1.6
-mypy==1.7.1
-
+black==24.8.0
+ruff==0.6.9
+mypy==1.11.2

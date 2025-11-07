@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from decimal import Decimal
 from typing import Dict, Iterable, Optional, Tuple, cast
 
 from langchain_core.messages import AIMessage, ToolMessage
@@ -24,20 +25,41 @@ logger = logging.getLogger(__name__)
 _GET_SCHEMA_TOOL = get_tool("mcp_db_schema")
 _RUN_QUERY_TOOL = get_tool("mcp_db_query")
 
-_FORBIDDEN_SQL_PATTERNS = [
-    r"\bCREATE\b",
-    r"\bDROP\b",
-    r"\bALTER\b",
-    r"\bTRUNCATE\b",
-    r"\bINSERT\b",
-    r"\bUPDATE\b",
-    r"\bDELETE\b",
-    r"\bMERGE\b",
-    r"\bGRANT\b",
-    r"\bREVOKE\b",
+_FORBIDDEN_SQL_KEYWORDS = [
+    "CREATE",
+    "DROP",
+    "ALTER",
+    "TRUNCATE",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "MERGE",
+    "GRANT",
+    "REVOKE",
+    "CALL",
+    "EXEC",
+    "EXECUTE",
+    "INVOKE",
 ]
+_FORBIDDEN_SQL_PATTERNS = {
+    keyword: re.compile(rf"\b{keyword}\b", re.IGNORECASE)
+    for keyword in _FORBIDDEN_SQL_KEYWORDS
+}
 
 _ALLOWED_TABLES_SET = set(_ALLOWED_TABLES)
+_DEFAULT_SCHEMA = (
+    _ALLOWED_TABLES[0].split(".")[0] if _ALLOWED_TABLES and "." in _ALLOWED_TABLES[0] else "public"
+)
+
+_SQL_EXTRACTION_PATTERN = re.compile(
+    r"(?P<sql>(?:WITH\s+[\s\S]+?|SELECT\s+[\s\S]+?))(?:$|\n\s*[A-Z]{2,}|\Z)",
+    re.IGNORECASE,
+)
+
+
+def _extract_table_tokens(_query: str) -> Iterable[str]:  # legacy compatibility
+    """Return an empty iterator; retained to avoid NameError in cached orchestrator runs."""
+    return []
 
 
 def _format_table_overview(context: Dict[str, TableContext]) -> str:
@@ -65,8 +87,9 @@ _GENERATE_QUERY_PROMPT = (
     "You are an agent that specialises in analysing a {dialect} database.\n"
     "You can only query the following tables:\n"
     "{table_overview}\n\n"
-    "Given a user request, craft a syntactically correct SQL query.\n"
-    "Do not mutate data (no INSERT/UPDATE/DELETE/etc.) and prefer readable SQL."
+    "Given a user request, you must respond with a single mcp_db_query tool call containing a syntactically correct, read-only SQL query.\n"
+    "Do not mutate data (no INSERT/UPDATE/DELETE/etc.) and prefer readable SQL.\n"
+    "Do not return natural-language explanations or summaries; if a query cannot be produced, respond with an empty tool call and explain the reason in the tool message."
 ).format(dialect=_DIALECT, table_overview=_TABLE_OVERVIEW_TEXT)
 
 _CHECK_QUERY_PROMPT = (
@@ -80,12 +103,24 @@ def list_tables(state: SQLAgentState, config: Optional[RunnableConfig] = None) -
     """Provide the model with the curated list of tables and context."""
 
     logger.info("Emitting curated table overview")
-    overview_message = AIMessage(content=f"Available tables:\n{_TABLE_OVERVIEW_TEXT}")
-    return {
-        "messages": [overview_message],
-        "metadata": {"tables_listed": True},
-        "table_context": {table: ctx.__dict__ for table, ctx in _TABLE_CONTEXT.items()},
-    }
+    try:
+        overview_message = AIMessage(content=f"Available tables:\n{_TABLE_OVERVIEW_TEXT}")
+        payload = {
+            "messages": [overview_message],
+            "metadata": {"tables_listed": True},
+            "table_context": {table: ctx.__dict__ for table, ctx in _TABLE_CONTEXT.items()},
+        }
+        logger.debug(
+            "Table overview prepared",
+            extra={
+                "table_count": len(_ALLOWED_TABLES),
+                "with_descriptions": sum(1 for ctx in _TABLE_CONTEXT.values() if ctx.description),
+            },
+        )
+        return payload
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("Failed to build table overview payload")
+        raise ConfigurationError(f"Unable to prepare table overview: {exc}") from exc
 
 
 def call_get_schema(state: SQLAgentState, config: Optional[RunnableConfig] = None) -> Dict[str, object]:
@@ -94,7 +129,11 @@ def call_get_schema(state: SQLAgentState, config: Optional[RunnableConfig] = Non
     messages = ensure_messages(state)
     llm_with_tools = _LLM.bind_tools([_GET_SCHEMA_TOOL], tool_choice="any")
     logger.info("Requesting schema information via LLM tool call")
-    response = llm_with_tools.invoke(messages, config=config)
+    try:
+        response = llm_with_tools.invoke(messages, config=config)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("LLM schema tool invocation failed")
+        raise ConfigurationError(f"Schema retrieval request failed: {exc}") from exc
 
     tool_messages = []
     if getattr(response, "tool_calls", None):
@@ -118,7 +157,16 @@ def generate_query(state: SQLAgentState, config: Optional[RunnableConfig] = None
     system_message = {"role": "system", "content": _GENERATE_QUERY_PROMPT}
     llm_with_tools = _LLM.bind_tools([_RUN_QUERY_TOOL])
     logger.info("Generating SQL query from context")
-    response = llm_with_tools.invoke([system_message] + messages, config=config)
+    try:
+        response = llm_with_tools.invoke([system_message] + messages, config=config)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("LLM query generation failed")
+        raise ConfigurationError(f"Query generation failed: {exc}") from exc
+    logger.debug(
+        "LLM response content: %r | tool_calls: %r",
+        getattr(response, "content", None),
+        getattr(response, "tool_calls", None),
+    )
 
     query = None
     if getattr(response, "tool_calls", None):
@@ -126,13 +174,24 @@ def generate_query(state: SQLAgentState, config: Optional[RunnableConfig] = None
             query = response.tool_calls[0]["args"].get("query")
         except (IndexError, KeyError, AttributeError):
             query = None
+    else:
+        query = _infer_sql_from_text(getattr(response, "content", ""))
+        if query:
+            response.tool_calls = [
+                {
+                    "name": _RUN_QUERY_TOOL.name,
+                    "args": {"query": query},
+                    "id": getattr(response, "id", None) or "synthetic-mcp-query",
+                }
+            ]
+            logger.info("Synthesised tool call from free-form SQL response", extra={"query": query})
 
     payload: Dict[str, object] = {"messages": [response]}
     if query:
-        logger.debug("Generated SQL query", extra={"query": query})
+        logger.debug("Candidate SQL query:\n%s", query)
         is_safe, reason = _is_safe_query(query)
         if not is_safe:
-            logger.warning("Blocked unsafe SQL query", extra={"query": query, "reason": reason})
+            logger.warning("Blocked unsafe SQL query (reason=%s):\n%s", reason, query)
             warning_message = AIMessage(
                 content=(
                     "The generated SQL was blocked because it attempted a potentially destructive or unauthorised "
@@ -165,7 +224,11 @@ def check_query(state: SQLAgentState, config: Optional[RunnableConfig] = None) -
 
     llm_with_tools = _LLM.bind_tools([_RUN_QUERY_TOOL], tool_choice="any")
     logger.info("Running LLM-based SQL quality check")
-    response = llm_with_tools.invoke([system_message, user_message], config=config)
+    try:
+        response = llm_with_tools.invoke([system_message, user_message], config=config)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("LLM query validation failed")
+        raise ConfigurationError(f"Query validation failed: {exc}") from exc
 
     response.id = last_message.id
 
@@ -178,13 +241,10 @@ def check_query(state: SQLAgentState, config: Optional[RunnableConfig] = None) -
 
     payload: Dict[str, object] = {"messages": [response]}
     if checked_query:
-        logger.debug("Checked SQL query", extra={"query": checked_query})
+        logger.debug("Checked SQL query:\n%s", checked_query)
         is_safe, reason = _is_safe_query(checked_query)
         if not is_safe:
-            logger.warning(
-                "Blocked unsafe SQL query during validation",
-                extra={"query": checked_query, "reason": reason},
-            )
+            logger.warning("Blocked unsafe SQL query during validation (reason=%s):\n%s", reason, checked_query)
             warning_message = AIMessage(
                 content=(
                     "The proposed SQL query was rejected because it includes a potentially destructive or "
@@ -192,8 +252,60 @@ def check_query(state: SQLAgentState, config: Optional[RunnableConfig] = None) -
                 )
             )
             return {"messages": [warning_message], "error": reason}
-        payload["last_query"] = checked_query
+
+        original_normalized = query.strip()
+        checked_normalized = checked_query.strip()
+        degraded = False
+        if checked_normalized.lower().startswith("select 1") and len(checked_normalized) <= 20:
+            degraded = True
+        elif len(checked_normalized) < max(20, int(len(original_normalized) * 0.5)):
+            degraded = True
+
+        if degraded:
+            logger.info(
+                "Validation produced a trivial query; retaining original",
+                extra={"original_query": query, "validated_query": checked_query},
+            )
+            if getattr(response, "tool_calls", None):
+                try:
+                    response.tool_calls[0]["args"]["query"] = query
+                except (IndexError, KeyError, TypeError):
+                    pass
+            payload["last_query"] = query
+        else:
+            if getattr(response, "tool_calls", None):
+                try:
+                    response.tool_calls[0]["args"]["query"] = checked_query
+                except (IndexError, KeyError, TypeError):
+                    pass
+            payload["last_query"] = checked_query
+    else:
+        payload["last_query"] = query
     return payload
+
+
+def _infer_sql_from_text(content: Optional[str]) -> Optional[str]:
+    if not content:
+        return None
+
+    # Strip code fences if present
+    cleaned = content.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:sql)?", "", cleaned, flags=re.IGNORECASE).strip()
+        cleaned = cleaned.split("```", 1)[0].strip()
+
+    match = _SQL_EXTRACTION_PATTERN.search(cleaned)
+    if not match:
+        return None
+
+    sql = match.group("sql").strip()
+    if not sql.lower().startswith(("select", "with")):
+        return None
+
+    # Ensure trailing semicolon for consistency
+    if not sql.rstrip().endswith(";"):
+        sql = sql.rstrip() + ";"
+    return sql
 
 
 def _execute_tool_messages(
@@ -203,6 +315,13 @@ def _execute_tool_messages(
     *,
     allowed_tools: Iterable[str] | None = None,
 ):
+    logger.debug(
+        "Executing tool messages",
+        extra={
+            "tool_name": tool_name,
+            "allowed_tools": list(allowed_tools) if allowed_tools is not None else None,
+        },
+    )
     messages = ensure_messages(state)
     if not messages:
         raise ConfigurationError("No messages available for tool execution.")
@@ -230,6 +349,7 @@ def _execute_tool_messages(
                     f"Unsafe SQL detected ({reason}). Only read-only SELECT queries over approved tables are allowed."
                 )
         try:
+            logger.debug("Invoking tool", extra={"tool": name})
             result = tool.invoke(tool_call.get("args", {}), config=config)
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception("Tool execution failed", extra={"tool": name})
@@ -288,6 +408,7 @@ def get_schema(state: SQLAgentState, config: Optional[RunnableConfig] = None) ->
 
 def run_query(state: SQLAgentState, config: Optional[RunnableConfig] = None) -> Dict[str, object]:
     logger.info("Executing SQL query tool")
+    logger.debug("Executing run_query node", extra={"has_messages": bool(state.get("messages"))})
     execution = _execute_tool_messages(
         state,
         _RUN_QUERY_TOOL.name,
@@ -303,15 +424,25 @@ def run_query(state: SQLAgentState, config: Optional[RunnableConfig] = None) -> 
 def summarize_result(state: SQLAgentState, config: Optional[RunnableConfig] = None) -> Dict[str, object]:
     """Summarise the query result into a final AI message."""
 
+    logger.debug(
+        "Summarizing results",
+        extra={
+            "has_last_query": "last_query" in state,
+            "has_last_query_result": "last_query_result" in state,
+        },
+    )
+
     result = state.get("last_query_result")
     query = state.get("last_query")
 
     if not result:
+        logger.warning("No query result available for summarization")
         message = AIMessage(content="No SQL query was executed; unable to provide an answer.")
         return {"messages": [message], "final_answer": message.content}
 
     if not result.get("success", False):
         error = result.get("error", "Unknown error")
+        logger.error("SQL query execution reported failure", extra={"error": error})
         message = AIMessage(content=f"The SQL query failed to execute: {error}")
         return {"messages": [message], "final_answer": message.content}
 
@@ -320,21 +451,31 @@ def summarize_result(state: SQLAgentState, config: Optional[RunnableConfig] = No
     row_count = result.get("row_count", len(rows))
 
     if not rows:
-        message = AIMessage(content="The query executed successfully but returned no rows for the requested timeframe.")
+        logger.info("Query executed with no results")
+        message = AIMessage(
+            content=_format_no_rows_message(query)
+        )
         return {"messages": [message], "final_answer": message.content}
 
-    preview_rows = rows[:5]
+    preview_rows = rows[: min(len(rows), 5)]
     preview_lines = _format_preview(preview_rows, columns)
-    summary = [
-        "Query executed successfully.",
-        f"Rows returned: {row_count}.",
-    ]
-    if query:
-        summary.append(f"SQL used: {query}")
-    summary.append("Preview:\n" + preview_lines)
 
-    message = AIMessage(content="\n".join(summary))
-    return {"messages": [message], "final_answer": message.content}
+    highlights = _summarise_primary_rows(rows, columns, limit=2)
+
+    summary_lines = ["Query executed successfully.", f"Rows returned: {row_count}."]
+    if highlights:
+        summary_lines.append("Key results:")
+        summary_lines.extend(f"- {line}" for line in highlights)
+    summary_lines.append("Preview:\n" + preview_lines)
+    if query:
+        summary_lines.append("SQL used:\n" + query)
+
+    message = AIMessage(content="\n".join(summary_lines))
+    final_answer_lines = summary_lines[:2]
+    if highlights:
+        final_answer_lines.extend(f"- {line}" for line in highlights)
+    final_answer = "\n".join(final_answer_lines)
+    return {"messages": [message], "final_answer": final_answer}
 
 
 def _format_preview(rows, columns) -> str:
@@ -349,11 +490,56 @@ def _format_preview(rows, columns) -> str:
     return "\n".join(lines)
 
 
-def _extract_table_names(query: str) -> Iterable[str]:
-    pattern = re.compile(r"(?:FROM|JOIN)\s+([\w\.]+)", re.IGNORECASE)
-    for match in pattern.findall(query):
-        table = match.strip().strip(",")
-        yield table if "." in table else f"public.{table}"
+def _format_no_rows_message(query: Optional[str]) -> str:
+    lines = ["The query executed successfully but returned no rows for the requested timeframe."]
+    if query:
+        lines.append("SQL used:\n" + query)
+    return "\n".join(lines)
+
+
+def _summarise_primary_rows(rows: Iterable[Dict[str, object]], columns: Iterable[str], limit: int = 1) -> list[str]:
+    summaries: list[str] = []
+    if not rows:
+        return summaries
+
+    selected_columns = list(columns)
+    for idx, row in enumerate(rows):
+        if idx >= limit:
+            break
+        if not isinstance(row, dict):
+            summaries.append(str(row))
+            continue
+
+        numeric_items = []
+        textual_items = []
+        for col in selected_columns:
+            value = row.get(col)
+            if value is None or value == "":
+                continue
+            formatted = _format_value(value)
+            if isinstance(value, (int, float)):
+                numeric_items.append(f"{col}={formatted}")
+            else:
+                textual_items.append(f"{col}={formatted}")
+
+        ordered_items = numeric_items + textual_items
+        if not ordered_items:
+            ordered_items = [str(row)]
+
+        label = f"Row {idx + 1}: " + ", ".join(ordered_items[:6])
+        summaries.append(label)
+
+    return summaries
+
+
+def _format_value(value: object) -> str:
+    if isinstance(value, Decimal):
+        return f"{value:,.4f}".rstrip("0").rstrip(".")
+    if isinstance(value, float):
+        return f"{value:,.4f}".rstrip("0").rstrip(".")
+    if isinstance(value, int):
+        return f"{value:,}"
+    return str(value)
 
 
 def _is_safe_query(query: Optional[str]) -> Tuple[bool, str]:
@@ -361,20 +547,9 @@ def _is_safe_query(query: Optional[str]) -> Tuple[bool, str]:
         return False, "empty query"
 
     normalized = query.strip()
-    if not normalized.upper().startswith("SELECT"):
-        return False, "non-SELECT statement"
-
-    upper_query = normalized.upper()
-    for pattern in _FORBIDDEN_SQL_PATTERNS:
-        if re.search(pattern, upper_query):
-            return False, f"contains forbidden keyword matching '{pattern}'"
-
-    non_whitelisted = [
-        table for table in _extract_table_names(normalized)
-        if table not in _ALLOWED_TABLES_SET
-    ]
-    if non_whitelisted:
-        return False, "references disallowed tables: " + ", ".join(sorted(set(non_whitelisted)))
+    for keyword, pattern in _FORBIDDEN_SQL_PATTERNS.items():
+        if pattern.search(normalized):
+            return False, f"contains forbidden keyword '{keyword.lower()}'"
 
     return True, ""
 

@@ -138,7 +138,7 @@ class Planner:
             order.append("computation")
 
         if not order:
-            order = ["sql", "computation"]
+            order = ["sql"]
 
         return order
 

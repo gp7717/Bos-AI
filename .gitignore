@@ -1,4 +1,5 @@
 venv/
+.venv/
 env/
 __pycache__/
 .cursor/
@@ -6,3 +7,4 @@ __pycache__/
 .env
 .env.*
 .env.local
+.gitignore

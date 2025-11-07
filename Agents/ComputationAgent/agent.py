@@ -60,6 +60,8 @@ class ComputationAgent:
                     "You are a precise analytical assistant. "
                     "Write a short Python snippet to compute numeric or tabular answers. "
                     "You must only use the provided safe sandbox with built-in math/statistics utilities. "
+                    "Do not use import statements; rely on the preloaded helpers such as date, datetime, and timedelta. "
+                    "If you need functionality that is not available without imports, explain the requirement instead of importing. "
                     "Always assign your final numeric or structured answer to a variable named 'result'. "
                     "Return JSON following the given format instructions.",
                 ),

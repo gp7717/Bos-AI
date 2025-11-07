@@ -10,7 +10,16 @@ from pydantic import BaseModel, Field, field_validator
 
 
 AgentName = Literal["sql", "computation", "planner", "composer"]
-AgentExecutionStatus = Literal["pending", "running", "succeeded", "failed", "skipped"]
+
+
+class AgentExecutionStatus(str, Enum):
+    """Execution lifecycle state for an individual agent."""
+
+    pending = "pending"
+    running = "running"
+    succeeded = "succeeded"
+    failed = "failed"
+    skipped = "skipped"
 
 
 class TraceEventType(str, Enum):
@@ -63,7 +72,7 @@ class AgentExecutionStep(BaseModel):
     """Intermediate execution step emitted by an individual agent."""
 
     agent: AgentName
-    status: AgentExecutionStatus = "pending"
+    status: AgentExecutionStatus = AgentExecutionStatus.pending
     output: Optional[str] = None
     tabular: Optional[TabularResult] = None
     error: Optional[AgentError] = None

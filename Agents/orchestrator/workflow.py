@@ -146,6 +146,9 @@ def compose_node(state: OrchestratorState) -> OrchestratorState:
         )
     )
 
+    if request.trace:
+        response = response.model_copy(update={"trace": trace})
+
     return {
         "request": request,
         "response": response,
@@ -257,7 +260,7 @@ def _run_sql_agent(question: str, context: Optional[Dict[str, Any]]) -> AgentRes
     )
 
     error = None
-    if status == AgentExecutionStatus.failed:
+    if status is AgentExecutionStatus.failed:
         error_message = None
         if isinstance(result_payload, dict):
             error_message = result_payload.get("error") or "SQL query failed"

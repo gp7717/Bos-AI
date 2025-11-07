@@ -53,6 +53,8 @@ _ALLOWED_MODULES: Mapping[str, Any] = {
     "Fraction": Fraction,
 }
 
+_ALLOWED_INSTANCE_METHODS = {"replace"}
+
 _FORBIDDEN_NAMES: Iterable[str] = (
     "__import__",
     "eval",
@@ -83,6 +85,7 @@ class _SafetyChecker(ast.NodeVisitor):
         ast.Call,
         ast.Name,
         ast.Load,
+        ast.Store,
         ast.BinOp,
         ast.UnaryOp,
         ast.BoolOp,
@@ -111,6 +114,29 @@ class _SafetyChecker(ast.NodeVisitor):
         ast.Lambda,
         ast.With,
         ast.alias,
+        ast.Add,
+        ast.Sub,
+        ast.Mult,
+        ast.Div,
+        ast.Mod,
+        ast.Pow,
+        ast.FloorDiv,
+        ast.USub,
+        ast.UAdd,
+        ast.Not,
+        ast.And,
+        ast.Or,
+        ast.Eq,
+        ast.NotEq,
+        ast.Lt,
+        ast.LtE,
+        ast.Gt,
+        ast.GtE,
+        ast.In,
+        ast.NotIn,
+        ast.Is,
+        ast.IsNot,
+        ast.keyword,
     }
 
     _forbidden_nodes = {
@@ -137,25 +163,31 @@ class _SafetyChecker(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> Any:  # type: ignore[override]
         self._validate_callable(node.func)
-        return super().visit_Call(node)
+        self.generic_visit(node)
+        return None
 
     def visit_Name(self, node: ast.Name) -> Any:  # type: ignore[override]
         if node.id in _FORBIDDEN_NAMES:
             raise SandboxViolation(f"Usage of name '{node.id}' is not permitted in sandbox")
         if node.id.startswith("__"):
             raise SandboxViolation("Magic dunder names are not permitted")
-        return super().visit_Name(node)
+        self.generic_visit(node)
+        return None
 
     def visit_Attribute(self, node: ast.Attribute) -> Any:  # type: ignore[override]
         if node.attr.startswith("__"):
             raise SandboxViolation("Attribute access to magic methods is not permitted")
-        return super().visit_Attribute(node)
+        self.generic_visit(node)
+        return None
 
     def _validate_callable(self, call: ast.expr) -> None:
         if isinstance(call, ast.Name):
             if call.id not in _ALLOWED_BUILTINS and call.id not in _ALLOWED_MODULES:
                 raise SandboxViolation(f"Callable '{call.id}' is not allowed in sandbox")
         elif isinstance(call, ast.Attribute):
+            attr_name = getattr(call, "attr", None)
+            if attr_name in _ALLOWED_INSTANCE_METHODS:
+                return
             root = self._resolve_root_name(call)
             if root not in _ALLOWED_MODULES:
                 raise SandboxViolation(
