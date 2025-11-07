@@ -1,0 +1,311 @@
+# Table context for QueryAgent
+#
+# All tables are in the public schema.  Descriptions are short but precise enough for the agent
+# to understand the purpose of each table and the meaning of the key columns.
+#
+# Columns listed are the ones most likely to be used in analytical queries.
+# You can add/remove columns later without breaking the agent.
+
+tables:
+
+  # ----------------------------------------------------------------------
+  #  AD-ATTRIBUTION TABLES
+  # ----------------------------------------------------------------------
+  public.dw_meta_ads_attribution:
+    description: Hourly Meta (Facebook/Instagram) ad performance with spend, impressions, clicks, conversions, and Shopify-attributed order revenue/COGS.
+    columns:
+      - id
+      - unique_id
+      - campaign_id
+      - campaign_name
+      - adset_id
+      - adset_name
+      - ad_id
+      - ad_name
+      - date_start
+      - hour
+      - hourly_window
+      - impressions
+      - clicks
+      - spend
+      - cpm
+      - cpc
+      - ctr
+      - action_onsite_web_purchase
+      - value_onsite_web_purchase
+      - attributed_orders_count
+      - attributed_orders_revenue
+      - attributed_orders_cogs
+      - attributed_orders_quantity
+      - attributed_orders          # jsonb
+      - product_details           # jsonb
+      - order_ids
+      - sku_list
+      - utm_source
+      - utm_medium
+      - utm_campaign
+      - utm_content
+      - utm_term
+      - channel
+      - attribution_source
+      - analysis_date
+      - created_at
+      - updated_at
+
+  public.dw_google_ads_attribution:
+    description: Hourly Google Ads performance with spend, impressions, clicks, conversions, and Shopify-attributed order revenue/COGS.
+    columns:
+      - id
+      - unique_id
+      - campaign_id
+      - campaign_name
+      - customer_id
+      - advertising_channel_type
+      - campaign_status
+      - date_start
+      - hour
+      - hourly_window
+      - impressions
+      - clicks
+      - cost_amount
+      - average_cpc
+      - average_cpm
+      - ctr
+      - conversions
+      - conversions_value
+      - all_conversions
+      - all_conversions_value
+      - attributed_orders_count
+      - attributed_orders_revenue
+      - attributed_orders_cogs
+      - attributed_orders_quantity
+      - attributed_orders          # jsonb
+      - product_details           # jsonb
+      - order_ids
+      - sku_list
+      - utm_source
+      - utm_medium
+      - utm_campaign
+      - utm_content
+      - utm_term
+      - channel
+      - attribution_source
+      - analysis_date
+      - created_at
+      - updated_at
+
+  public.dw_organic_attribution:
+    description: Hourly organic (non-paid) traffic attribution with estimated impressions/clicks and Shopify-attributed order revenue/COGS.
+    columns:
+      - id
+      - unique_id
+      - utm_source
+      - utm_medium
+      - utm_campaign
+      - utm_content
+      - utm_term
+      - date_start
+      - hour
+      - hourly_window
+      - channel
+      - attribution_source
+      - estimated_impressions
+      - estimated_clicks
+      - estimated_spend
+      - attributed_orders_count
+      - attributed_orders_revenue
+      - attributed_orders_cogs
+      - attributed_orders_quantity
+      - attributed_orders          # jsonb
+      - product_details           # jsonb
+      - order_ids
+      - sku_list
+      - analysis_date
+      - created_at
+      - updated_at
+
+  public.ads_insights_hourly:
+    description: Raw hourly ad-insights (Meta) before attribution – contains every action/value field from the ad platform.
+    columns:
+      - campaign_id
+      - campaign_name
+      - adset_id
+      - adset_name
+      - ad_id
+      - ad_name
+      - date_start
+      - date_stop
+      - hourly_window
+      - impressions
+      - clicks
+      - spend
+      - cpm
+      - cpc
+      - ctr
+      - action_onsite_web_purchase
+      - value_onsite_web_purchase
+      - load_date
+
+  public.gads_hourly_pmax_campaign_metrics:
+    description: Hourly Google Performance-Max campaign metrics (clicks, cost, conversions, etc.).
+    columns:
+      - date
+      - hour
+      - customer_id
+      - campaign_id
+      - campaign_name
+      - advertising_channel_type
+      - campaign_status
+      - clicks
+      - ctr
+      - cost_micros
+      - average_cpc_micros
+      - conversions
+      - conversions_value
+      - all_conversions
+      - all_conversions_value
+
+  # ----------------------------------------------------------------------
+  #  SHOPIFY ORDER & CUSTOMER TABLES
+  # ----------------------------------------------------------------------
+  public.shopify_orders:
+    description: Core Shopify order header data – price, timestamps, fulfillment, UTM parameters.
+    columns:
+      - order_id
+      - order_name
+      - created_at
+      - processed_at
+      - updated_at
+      - closed_at
+      - cancelled_at
+      - total_price_amount
+      - total_price_currency
+      - total_shipping_amount
+      - display_fulfillment_status
+      - customer_utm_source
+      - customer_utm_medium
+      - customer_utm_campaign
+      - customer_utm_content
+      - customer_utm_term
+      - customer_journey          # jsonb
+      - custom_attributes         # jsonb
+
+  public.customer_details_th:
+    description: Detailed billing/shipping, payment, tax, and fulfillment info for each Shopify order.
+    columns:
+      - order_id
+      - order_name
+      - created_at
+      - email
+      - billing_name
+      - billing_address1
+      - billing_city
+      - billing_province_name
+      - billing_country
+      - shipping_name
+      - shipping_address1
+      - shipping_city
+      - shipping_province_name
+      - shipping_country
+      - payment_method
+      - payment_status
+      - subtotal
+      - shipping
+      - taxes
+      - discount_amount
+      - total
+      - line_items                 # jsonb
+      - awb_number
+      - fulfillment_status
+      - bluedart_service_available
+      - outstanding_balance
+
+  public.shopify_order_customer_journey_moments:
+    description: One row per UTM touch-point in the customer journey (linked to shopify_orders).
+    columns:
+      - journey_id
+      - order_id
+      - utm_source
+      - utm_medium
+      - utm_campaign
+      - utm_content
+      - utm_term
+
+  public.shopify_order_line_items:
+    description: Line-item level data for each order (quantity, price, variant).
+    columns:
+      - item_id
+      - order_id
+      - title
+      - quantity
+      - original_unit_price_amount
+      - discounted_unit_price_amount
+      - variant_id
+
+  public.shopify_line_item_tax_lines:
+    description: Tax breakdown per line item.
+    columns:
+      - tax_line_id
+      - item_id
+      - title
+      - rate
+      - tax_amount
+
+  # ----------------------------------------------------------------------
+  #  PRODUCT & COST TABLES
+  # ----------------------------------------------------------------------
+  public.shopify_product_variants:
+    description: Master list of product variants (SKU, cost, selling price, images).
+    columns:
+      - variant_id
+      - variant_title
+      - sku
+      - unit_cost_amount
+      - unit_cost_currency
+      - selling_price
+      - product_id
+      - product_title
+      - vendor
+      - handle
+      - updated_at
+
+  public.product_variant_cost_history:
+    description: Historical cost changes for each variant (valid_from / valid_to).
+    columns:
+      - cost_id
+      - variant_id
+      - variant_title
+      - sku
+      - selling_price
+      - unit_cost_amount
+      - cost_currency
+      - valid_from
+      - valid_to
+      - updated_at
+
+  # ----------------------------------------------------------------------
+  #  AMAZON ADS
+  # ----------------------------------------------------------------------
+  public.amazon_product_metrics_daily:
+    description: Daily Amazon ad metrics per ASIN/SKU (impressions, clicks, spend, orders, sales, ACOS, ROAS).
+    columns:
+      - id
+      - campaign_id
+      - campaign_name
+      - adgroup_id
+      - adgroup_name
+      - product_ad_id
+      - asin
+      - sku
+      - date
+      - impressions
+      - clicks
+      - spend
+      - orders
+      - sales
+      - ctr
+      - cpc
+      - acos
+      - roas
+      - created_at
+      - updated_at
