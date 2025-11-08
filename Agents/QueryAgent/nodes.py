@@ -348,14 +348,16 @@ def _execute_tool_messages(
                 raise ConfigurationError(
                     f"Unsafe SQL detected ({reason}). Only read-only SELECT queries over approved tables are allowed."
                 )
+        structured_result = None
         try:
             logger.debug("Invoking tool", extra={"tool": name})
             result = tool.invoke(tool_call.get("args", {}), config=config)
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception("Tool execution failed", extra={"tool": name})
-            result = f"Error executing {name}: {exc}"
+            error_payload = {"success": False, "error": str(exc)}
+            result = error_payload
+            structured_result = error_payload
 
-        structured_result = None
         if isinstance(result, ToolMessage):
             rendered = result
         else:
@@ -367,7 +369,7 @@ def _execute_tool_messages(
             else:
                 content = result
 
-            if name == _RUN_QUERY_TOOL.name:
+            if name == _RUN_QUERY_TOOL.name and structured_result is None:
                 try:
                     structured_result = json.loads(content)
                 except json.JSONDecodeError:

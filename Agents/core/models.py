@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple
 from pydantic import BaseModel, Field, field_validator
 
 
-AgentName = Literal["sql", "computation", "planner", "composer"]
+AgentName = Literal["sql", "computation", "planner", "composer", "api_docs"]
 
 
 class AgentExecutionStatus(str, Enum):
@@ -118,7 +118,7 @@ class AgentRequest(BaseModel):
     @staticmethod
     def _coerce_agent(value: AgentName | str) -> AgentName:
         lookup = str(value).strip().lower()
-        if lookup not in {"sql", "computation", "planner", "composer"}:
+        if lookup not in {"sql", "computation", "planner", "composer", "api_docs"}:
             raise ValueError(f"Unsupported agent identifier: {value}")
         return lookup  # type: ignore[return-value]
 

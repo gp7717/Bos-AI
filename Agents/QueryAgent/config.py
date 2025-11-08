@@ -278,8 +278,22 @@ def get_resources() -> SQLAgentResources:
 
     logger.info("Initialising SQL agent resources")
 
+    temperature_str = os.getenv("QUERY_AGENT_AZURE_OPENAI_TEMPERATURE")
+    if temperature_str:
+        try:
+            temperature = float(temperature_str)
+        except ValueError:
+            logger.warning(
+                "Invalid QUERY_AGENT_AZURE_OPENAI_TEMPERATURE '%s'; defaulting to 1.0",
+                temperature_str,
+            )
+            temperature = 1.0
+    else:
+        temperature = 1.0
+
     llm = AzureChatOpenAI(
         **azure_cfg,
+        temperature=temperature,
     )
     mcp_client = _resolve_mcp_client()
 

@@ -43,6 +43,21 @@ _COMPUTE_KEYWORDS = {
     "percent",
 }
 
+_API_DOCS_KEYWORDS = {
+    "api",
+    "endpoint",
+    "route",
+    "http",
+    "/api/",
+    "get /",
+    "post /",
+    "put /",
+    "delete /",
+    "patch /",
+    "status code",
+    "request body",
+}
+
 
 class _PlannerResponse(BaseModel):
     agents: List[AgentName]
@@ -130,8 +145,11 @@ class Planner:
         lowered = question.lower()
         sql_score = sum(keyword in lowered for keyword in _SQL_KEYWORDS)
         comp_score = sum(keyword in lowered for keyword in _COMPUTE_KEYWORDS)
+        api_score = sum(keyword in lowered for keyword in _API_DOCS_KEYWORDS)
 
         order: List[AgentName] = []
+        if api_score >= max(sql_score, comp_score) and api_score > 0:
+            order.append("api_docs")
         if sql_score >= comp_score and sql_score > 0:
             order.append("sql")
         if comp_score >= sql_score and comp_score > 0:

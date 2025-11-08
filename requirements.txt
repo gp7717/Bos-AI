@@ -1,7 +1,7 @@
 # Core Framework
 fastapi>=0.115.2
 uvicorn[standard]>=0.32.0
-pydantic>=2.12.0,<2.13.0
+pydantic>=2.9.2,<2.10.0
 pydantic-settings>=2.5.2
 
 # Database
@@ -11,10 +11,11 @@ asyncpg==0.30.0
 alembic==1.13.3
 
 # LLM Integration
-openai>=2.6.1,<2.7.0
-langchain>=0.3.0,<0.4.0
-langchain-openai>=0.2.0
-langchain-community>=0.3.0
+openai>=1.51.0,<2.0.0
+langchain>=0.2.16,<0.3.0
+langchain-core>=0.2.38,<0.3.0        # <-- ADD THIS LINE
+langchain-openai>=0.1.25,<0.2.0
+langchain-community>=0.2.15,<0.3.0
 langgraph>=0.2.0,<0.3.0
 langsmith>=0.1.0
 
@@ -23,14 +24,14 @@ pgvector==0.3.0
 chromadb==0.5.11
 
 # Observability
-opentelemetry-api==1.38.0
-opentelemetry-sdk==1.38.0
-opentelemetry-instrumentation-fastapi==0.59b0
-opentelemetry-exporter-otlp==1.38.0  # Recommended replacement for jaeger (use OTLP)
+opentelemetry-api==1.27.0
+opentelemetry-sdk==1.27.0
+opentelemetry-instrumentation-fastapi==0.48b0
+opentelemetry-exporter-otlp==1.27.0
 
 # Caching & State
-redis==5.1.1
-hiredis==3.0.0
+redis==5.0.8
+hiredis==2.3.2
 
 # Security & Auth
 python-jose[cryptography]==3.3.0
@@ -41,10 +42,10 @@ python-multipart==0.0.9
 python-dateutil==2.9.0
 pytz==2024.2
 pandas==2.2.3
-numpy==2.1.2
+numpy==1.26.4
 pyyaml==6.0.2
-httpx>=0.27.2,<1.0.0
-tenacity==9.0.0
+httpx>=0.27.2,<0.28.0
+tenacity>=8.2.3,<9.0.0
 
 # MCP (Model Context Protocol)
 mcp>=1.2.0

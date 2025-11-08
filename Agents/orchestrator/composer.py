@@ -15,22 +15,38 @@ from Agents.QueryAgent.config import get_resources
 class Composer:
     """LLM-backed composer that consolidates agent answers."""
 
-    def __init__(self, llm: AzureChatOpenAI | None = None) -> None:
+    def __init__(self, llm: Optional[AzureChatOpenAI] = None) -> None:
         resources = get_resources()
         self.llm = llm or resources.llm
         self._prompt = ChatPromptTemplate.from_messages(
             [
                 (
                     "system",
-                    "You synthesise answers from multiple specialised agents. "
-                    "Provide a concise, truthful final answer. Mention any limitations. "
-                    "If tabular data is available, describe key takeaways but do not repeat the entire table.",
+                    (
+                        "You are a **Senior Business Intelligence Agent** delivering concise executive-ready insights. "
+                        "If data is missing or no rows are returned from a query, DO NOT provide generic BI consulting instructions or 'jargon'. "
+                        "Instead, clearly and directly summarise that no data was returned, propose up to three likely reasons specific to the situation, "
+                        "and suggest 1–2 *focused* next steps the user can take to resolve it (such as checking data coverage or adjusting date ranges). "
+                        "Do not output any template boilerplate or unnecessary placeholders for incomplete data.\n\n"
+                        "When there IS valid data, use these rules:\n"
+                        "- All amounts: **Indian Rupees (Rs.)** with commas and 2 decimals (e.g., Rs.1,75,206.00), never ₹ or INR.\n"
+                        "- Structure: Use **markdown sections** with emojis so findings are easily scannable.\n"
+                        "- Tone: Confident, professional, action‑oriented.\n"
+                        "- Show only *the most relevant* KPIs, depending on the domain (Campaign/Ads, Sales, Inventory, Support, or Finance), per the planner rationale and user query.\n"
+                        "- Highlight: Zeroes, missing data, or anomalies.\n"
+                        "- Insight: Provide 2–3 strategic observations with business impact.\n"
+                        "- Table rows: Only summarize the most important 1–3 rows — never repeat full raw data tables.\n"
+                        "- If any limitations or issues occurred, mention them briefly.\n\n"
+                        "Be concise and avoid repeating instructions or explanations unless the user asks how-to."
+                    ),
                 ),
                 (
                     "user",
-                    "User question: {question}\n"
-                    "Planner rationale: {planner_rationale}\n"
-                    "Agent summaries:\n{agent_summaries}",
+                    (
+                        "User question: {question}\n"
+                        "Planner rationale: {planner_rationale}\n"
+                        "Agent summaries:\n{agent_summaries}"
+                    ),
                 ),
             ]
         )

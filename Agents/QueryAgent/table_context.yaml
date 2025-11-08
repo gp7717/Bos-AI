@@ -125,7 +125,7 @@ tables:
       - updated_at
 
   public.ads_insights_hourly:
-    description: Raw hourly ad-insights (Meta) before attribution – contains every action/value field from the ad platform.
+    description: Raw hourly ad-insights for Meta before attribution – contains every action/value field from the ad platform.
     columns:
       - campaign_id
       - campaign_name

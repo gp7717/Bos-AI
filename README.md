@@ -16,11 +16,12 @@ flowchart TB
         C[LangGraph Orchestrator\n(workflow.compile_orchestrator)]
         D[Planner\nplanner.plan]
         E[Agent Execution Loop\nworkflow.execute_agent]
-        F[Composer\ncomposer.compose]
+    F[Composer\ncomposer.compose]
     end
     subgraph Specialised Agents
         G[SQL Agent\nQueryAgent/sql_agent.py]
         H[Computation Agent\nComputationAgent/agent.py]
+        I[API Docs Agent\nApiDocsAgent/agent.py]
     end
     subgraph Data Services
         I[Database / MCP Provider]
@@ -31,8 +32,9 @@ flowchart TB
     B --> C
     C -->|PlannerDecision| D
     D -->|ordered agents| E
-    E -->|invoke sql| G
+    E -->|invoke sql (auto-retries)| G
     E -->|invoke computation| H
+    E -->|invoke api docs| I
     G -->|read-only SQL queries| I
     H -->|sandboxed code| J
     G -->|AgentResult| E
@@ -67,7 +69,11 @@ Component Breakdown
 - **SQL Agent (`Agents/QueryAgent`)**
   - Implemented as a LangGraph workflow (`sql_agent.compile_sql_agent`), exposing nodes defined in `nodes.py`.
   - Key stages: table overview, optional schema fetch, query generation, query checking, tool execution via MCP client, and result interpretation.
+  - Automatically retries failed SQL executions (default 3 attempts). Each retry feeds the database error back into the LLM so follow-up queries can self-correct.
   - Enforces read-only usage through forbidden pattern checks and explicit allowed-table filters.
+- **API Docs Agent (`Agents/ApiDocsAgent`)**
+  - Loads curated context from `Docs/api_docs_context.yaml`, retrieves the most relevant snippets, and answers REST API questions with the shared Azure LLM.
+  - Returns rich trace events referencing the documentation chunks used, enabling auditable responses.
 
 - **Computation Agent (`Agents/ComputationAgent/agent.py`)**
   - Generates a computation plan and safe Python payload with LLM prompts and parses them into `_ComputationPlan`.

@@ -1,0 +1,349 @@
+sections:
+  - id: server-health
+    title: Server Health & Metrics
+    source: Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md#1-server-health--metrics-no-authentication-required
+    content: |
+      - GET `/health`: Health check that runs `SELECT 1` against Postgres. Responds with status, DB connectivity, timestamp, uptime. Returns 503 if DB query fails.
+      - GET `/metrics`: Runtime metrics (uptime, Node.js memory stats, timestamp).
+      - GET `/`: Plain text “Server is running”.
+
+  - id: product-metrics
+    title: Product Metrics CRUD
+    source: Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md#2-product-metrics-direct-routes---authentication-required
+    content: |
+      - GET `/product_metrics`: Joins `variants_tt` + `products_tt`, calculates `margin = selling_price - cogs` per variant.
+      - POST `/product_metrics`: Creates variant for an existing product (validates product_name → product_id). Fields: product_name, variant_title, sku_name, selling_price, cogs.
+      - PUT `/product_metrics/:sku_name`: Updates variant by SKU (product lookup + field updates).
+      - DELETE `/product_metrics/:sku_name`: Removes variant by SKU.
+
+  - id: core-analytics-financial
+    title: Core Analytics – Financial Metrics
+    source: Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md#3-core-analytics-apis
+    content: |
+      - GET `/api/ad_spend`: Aggregates Meta + Google ad spend (Google Ads API metrics.cost_micros, Facebook Graph insights spend). Optional startDate/endDate query params.
+      - GET `/api/cogs`: Shopify GraphQL orders, groups COGS by UTM source (Meta/Google/Organic).
+      - GET `/api/net_profit`: Combines sales, COGS, ad spend to compute per-channel net profit.
+      - GET `/api/sales`: Shopify sales grouped by Meta/Google/Organic.
+      - GET `/api/roas`: Calculates Gross, Net, Break-even ROAS; safe division handling.
+      - GET `/api/roas_by_date`: Daily ROAS breakdown for range.
+      - GET `/api/net_profit_single_day`: Net profit for specific day or date range (uses `product_variant_cost_history`).
+
+  - id: core-analytics-orders
+    title: Core Analytics – Order Metrics
+    source: Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md#3-core-analytics-apis
+    content: |
+      - GET `/api/order_count`: Totals and per-source item quantities (Shopify GraphQL).
+      - GET `/api/orders/:timeframe`: Orders grouped by daily/weekly/monthly buckets.
+      - GET `/api/latest_orders`: Most recent Shopify orders.
+      - GET `/api/net_sales/:timeframe`: Net revenue grouped by timeframe.
+      - GET `/api/products`: All Shopify products; POST `/api/products/sync`: syncs Shopify to local DB.
+
+  - id: geo-analytics
+    title: Geographic Analytics APIs
+    source: Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md#4-geographic-analytics-apis
+    content: |
+      - GET `/api/order_count_by_province`: Orders grouped by billing/shipping province.
+      - GET `/api/order_sales_by_province`: Revenue grouped by province.
+      - GET `/api/top_skus_by_sales`: Revenue by SKU (line items grouped by SKU).
+
+  - id: source-analytics
+    title: Source Analytics & Entity Reports
+    source: Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md#5-source-analytics-apis
+    content: |
+      - Traffic: GET `/api/source_visitor/:timeframe` (visitors by UTM source).
+      - Spend by hour: GET `/api/ad_spend_by_hour` (Facebook hourly breakdown).
+      - Product spend vs sales: GET `/api/product_spend_and_sales_by_title`.
+      - Meta reports: `/api/meta_entity_report`, `/api/meta_entity_report_hierarchy`.
+      - Organic report: `/api/organic_entity_report`.
+      - Google reports: `/api/google_entity_report`, `/api/google_entity_report_aggregated`.
+      - Amazon: `/api/amazon_daily_metrics`.
+
+  - id: amazon-entity
+    title: Amazon Entity Report
+    source: Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md#6-amazon-entity-report-apis
+    content: |
+      - GET `/api/amazon_entity_report`: Date-ranged report joining Amazon Ads data (campaign→ad group→keyword/product) with sales for ROAS/profit metrics.
+
+  - id: content-generation
+    title: Content Generation APIs
+    source: Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md#7-content-generation-apis
+    content: |
+      - GET `/api/content-generation/test`: Connectivity check.
+      - GET `/api/content-generation/content/generated`: Proxy to Python content generation service.
+
+  - id: customer-orders
+    title: Customer Order APIs
+    source: Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md#8-customer-order-apis
+    content: |
+      - POST `/api/customer-orders`: Validates & upserts order into `customer_details_th`; checks BlueDart pincode availability.
+      - POST `/api/customer-orders/bulk`: Batch insert/update with per-order validation.
+      - GET `/api/customer-orders`: Paginated list with filters (date, status, province, payment).
+      - GET `/api/customer-orders/search`: Dynamic multi-field search.
+      - GET `/api/customer-orders/:order_id`: Full order (billing, shipping, payment, line items).
+      - PUT `/api/customer-orders/:order_id`: Partial update with validation.
+      - DELETE `/api/customer-orders/:order_id`: Remove order.
+      - GET `/api/customer-orders/stats`: Summary metrics (count, revenue, AOV, per status/province).
+
+  - id: shipping-waybill
+    title: Shipping – Waybill APIs
+    source: Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md#9-shipping---waybill-apis
+    content: |
+      - POST `/api/shipping/generate-waybill`: Validates payload, uses BlueDart API, stores AWB & PDF.
+      - POST `/api/shipping/generate-bulk-waybills`: Processes multiple waybills, continues on partial failure.
+      - POST `/api/shipping/import-data`: Bulk data prep for waybill generation.
+      - GET `/api/shipping/waybill/:trackingNumber`: Retrieves stored waybill details.
+      - GET `/api/shipping/waybills`: Paginated & filtered waybill list.
+      - GET `/api/shipping/track/:trackingNumber`: BlueDart tracking status.
+      - POST `/api/shipping/cancel-waybill`: Cancels via BlueDart.
+      - POST `/api/shipping/update-ewaybill`: Updates GST e-waybill info.
+      - GET `/api/shipping/stats`: Waybill KPIs (status counts, avg delivery time, revenue).
+
+  - id: shipping-download
+    title: Shipping – Download APIs
+    source: Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md#10-shipping---download-apis
+    content: |
+      - GET `/api/shipping/download-pdf/:trackingNumber`: Retrieve stored waybill PDF.
+      - GET `/api/shipping/download-th-pdf/:trackingNumber`: Thailand-specific PDF template.
+      - POST `/api/shipping/download-bulk-pdf`: Zip of multiple PDFs.
+      - POST `/api/shipping/download-bulk-th-pdf`: Merged PDF for Thailand shipments.
+
+  - id: shipping-pincode
+    title: Shipping – Pincode APIs
+    source: Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md#11-shipping---pincode-apis
+    content: |
+      - GET `/api/shipping/check-pincode/:pincode`: BlueDart service availability per pincode/payment type.
+      - POST `/api/shipping/check-bulk-pincodes`: Batch availability lookup.
+
+  - id: db-analytics
+    title: Database Analytics
+    source: Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md#12-database-analytics-apis
+    content: |
+      - GET `/api/net_profit_daily`: Last N days net profit breakdown.
+      - GET `/api/sales_unitCost_by_hour`: Sales & unit cost per hour.
+      - POST `/api/historical_stats_by_date`: Totals for revenue, COGS, quantity, cancellations in date range.
+
+  - id: user-management
+    title: User Management
+    source: Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md#13-user-management-apis
+    content: |
+      - POST `/api/users`: Create Firebase user + Firestore doc (role validation, verification email).
+      - GET `/api/users`: List users (admin/super_admin).
+      - GET `/api/users/uid/:uid`: Fetch user.
+      - PUT `/api/users/:userId/role`: Update role & sidebar permissions.
+      - DELETE `/api/users/:userId`: Delete from Auth + Firestore.
+      - GET `/api/user/role`: Authenticated user role & permissions.
+      - POST `/api/users/verify-email`: Lookup by email.
+
+  - id: procurement
+    title: Procurement APIs
+    source: Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md#14-procurement-apis
+    content: |
+      - Product CRUD with variants, vendors, images, Azure Blob storage integration.
+      - Variant deletion, product status updates.
+      - Vendor management per product (create/list/update/delete/search).
+      - Storage stats endpoint for Blob usage.
+
+  - id: master-vendor-product
+    title: Master Vendor & Master Product APIs
+    source: Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md#15-master-vendor-apis
+    content: |
+      - Master Vendor: CRUD endpoints (`/api/masters/vendor/`) with duplicate checks (name, GST).
+      - Master Product: CRUD endpoints (`/api/masters/product/`) with duplication guard.
+
+  - id: receiving
+    title: Receiving – Purchase Requests & Quality Checks
+    source: Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md#17-receiving---purchase-request-apis
+    content: |
+      - Purchase Requests: create/list/get/update/delete/status patch; status flow pending→approved→received→completed.
+      - Quality Checks: bulk upsert, list by request, single fetch/delete, document upload/list/delete/stream (Azure storage).
+
+  - id: stock-management
+    title: Stock Management
+    source: Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md#19-stock-management-apis
+    content: |
+      - Inventory endpoints for variant-specific and paginated all-variant views.
+      - Returns endpoints: pending list, all returns, approve/reject with inventory impact.
+
+  - id: api-list-crossref
+    title: Endpoint Cross-reference
+    source: Docs/API Docs/COMPLETE_API_LIST.md
+    content: |
+      - Mirrors endpoint inventory (113 total) organized by category.
+      - Authentication: All `/api/*` require Firebase Auth except `/health` and `/metrics`.
+      - Role-based access summary: admin/super_admin for user management, manager+ for procurement/master/receiving/stock APIs.
+      - Rate limiting policies: stricter for bulk uploads; auth endpoints more lenient.
+contexts:
+  - id: api-docs-health-metrics
+    title: "Server Health & Metrics APIs"
+    source: "Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md"
+    section: "1. Server Health & Metrics"
+    content: |
+      GET /health: verifies service and Postgres connectivity (SELECT 1), returns {status, database, timestamp, uptime}, 503 on DB failure.
+      GET /metrics: exposes uptime and Node.js memory usage snapshot.
+      GET /: plain-text heartbeat confirming the dashboard backend is running.
+
+  - id: api-docs-product-metrics
+    title: "Product Metrics CRUD"
+    source: "Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md"
+    section: "2. Product Metrics"
+    content: |
+      GET /product_metrics: joins variants_tt + products_tt, calculates margin = selling_price - cogs.
+      POST /product_metrics: expects product_name, variant_title, sku_name, selling_price, cogs; resolves product_id then inserts variant.
+      PUT /product_metrics/:sku_name: updates variant fields (product reference, price, cost).
+      DELETE /product_metrics/:sku_name: removes variant, 404 if missing.
+
+  - id: api-docs-core-analytics
+    title: "Core Analytics APIs"
+    source: "Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md"
+    section: "3. Core Analytics"
+    content: |
+      GET /api/ad_spend: aggregates Meta + Google spend via external APIs.
+      GET /api/cogs: Shopify GraphQL, groups by traffic source (Meta, Google, Organic).
+      GET /api/net_profit: revenue - cogs - ad spend, channel breakdowns.
+      GET /api/sales: Shopify totals by traffic source.
+      GET /api/roas (+ /api/roas_by_date): computes gross, net, break-even ROAS.
+      GET /api/net_profit_single_day: single day or range profit using product_variant_cost_history.
+
+  - id: api-docs-order-analytics
+    title: "Order Count & Sales APIs"
+    source: "Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md"
+    section: "Order Metrics"
+    content: |
+      GET /api/order_count: Shopify orders grouped by UTM source, counts order + quantity.
+      GET /api/orders/:timeframe: group orders daily/weekly/monthly.
+      GET /api/latest_orders: latest Shopify orders (GraphQL).
+      GET /api/net_sales/:timeframe: revenue over periods.
+
+  - id: api-docs-products-endpoints
+    title: "Products Sync APIs"
+    source: "Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md"
+    section: "Product Management"
+    content: |
+      GET /api/products: fetch Shopify products via GraphQL.
+      POST /api/products/sync: synchronize Shopify catalog into local DB.
+
+  - id: api-docs-geographic
+    title: "Geographic Analytics APIs"
+    source: "Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md"
+    section: "4. Geographic Analytics"
+    content: |
+      GET /api/order_count_by_province: counts orders grouped by province.
+      GET /api/order_sales_by_province: sums revenue per province.
+      GET /api/top_skus_by_sales: ranks SKUs by sales value.
+
+  - id: api-docs-source-analytics
+    title: "Source & Ad Spend Analytics"
+    source: "Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md"
+    section: "5. Source Analytics"
+    content: |
+      GET /api/source_visitor/:timeframe: traffic by UTM source.
+      GET /api/ad_spend_by_hour: hourly Facebook spend.
+      GET /api/product_spend_and_sales_by_title: correlates ad spend with product sales.
+
+  - id: api-docs-entity-reports
+    title: "Entity Reports (Meta/Google/Amazon/Organic)"
+    source: "Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md"
+    section: "Entity Reports"
+    content: |
+      /api/meta_entity_report & /api/meta_entity_report_hierarchy: campaign→adset→ad attribution with spend, revenue, profit.
+      /api/organic_entity_report: time-based attribution for organic orders.
+      /api/google_entity_report and /api/google_entity_report_aggregated: Google hierarchy (campaign→ad group→ad/keyword).
+      /api/amazon_entity_report: Amazon ads hierarchy (campaign→ad group→keyword/product).
+      /api/amazon_daily_metrics: Amazon daily spend and conversions.
+
+  - id: api-docs-content-generation
+    title: "Content Generation APIs"
+    source: "Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md"
+    section: "7. Content Generation"
+    content: |
+      GET /api/content-generation/test: diagnostics.
+      GET /api/content-generation/content/generated: proxy to Python content service.
+
+  - id: api-docs-customer-orders
+    title: "Customer Orders APIs"
+    source: "Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md"
+    section: "8. Customer Order APIs"
+    content: |
+      POST /api/customer-orders (+ /bulk): upsert into customer_details_th with validation, sanitization, duplicate handling.
+      GET /api/customer-orders: paginated filters (date, status, province, payment).
+      GET /api/customer-orders/search: flexible attribute query.
+      GET /api/customer-orders/:order_id, PUT, DELETE: CRUD.
+      GET /api/customer-orders/stats: totals, AOV, status counts.
+
+  - id: api-docs-shipping-waybill
+    title: "Shipping Waybill APIs"
+    source: "Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md"
+    section: "9-11. Shipping APIs"
+    content: |
+      POST /api/shipping/generate-waybill (+ bulk/import): BlueDart integration with service availability checks, JWT auth, AWB storage.
+      GET /api/shipping/waybill/:trackingNumber, /waybills, /track/:trackingNumber: retrieval and tracking.
+      POST /api/shipping/cancel-waybill, /update-ewaybill.
+      Download endpoints: PDF retrieval (single, bulk, TH-specific).
+      Pincode checks: single and bulk BlueDart service availability.
+
+  - id: api-docs-database-analytics
+    title: "Database Analytics APIs"
+    source: "Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md"
+    section: "12. Database Analytics"
+    content: |
+      GET /api/net_profit_daily: last N days net profit using shopify_orders.
+      GET /api/sales_unitCost_by_hour: hourly sales & unit cost.
+      POST /api/historical_stats_by_date: historical revenue, COGS, quantity, cancellations.
+
+  - id: api-docs-user-management
+    title: "User Management APIs"
+    source: "Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md"
+    section: "13. User Management"
+    content: |
+      Firebase Auth + Firestore roles: POST /api/users, GET /api/users*, GET /api/users/uid/:uid, PUT /api/users/:userId/role, DELETE /api/users/:userId.
+      GET /api/user/role: retrieve current user's role & sidebar permissions.
+      POST /api/users/verify-email: lookup by email.
+
+  - id: api-docs-procurement
+    title: "Procurement APIs (Products/Vendors/Images)"
+    source: "Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md"
+    section: "14. Procurement APIs"
+    content: |
+      Product creation with variants, vendors, Azure image uploads (generate SAS URLs, confirm uploads).
+      CRUD for products, variants, vendors; storage stats; cleanup jobs for pending/orphaned images.
+
+  - id: api-docs-master-vendor-product
+    title: "Master Vendor & Product APIs"
+    source: "Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md"
+    section: "15-16. Master Data"
+    content: |
+      /api/masters/vendor/* endpoints: CRUD with duplicate checks.
+      /api/masters/product/* endpoints: master product CRUD with duplicate validation.
+
+  - id: api-docs-receiving
+    title: "Receiving & Quality Check APIs"
+    source: "Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md"
+    section: "17-18. Receiving"
+    content: |
+      Purchase requests lifecycle (POST, GET, PUT, DELETE, PATCH status).
+      Quality checks bulk operations, documents management (upload, list, delete, stream).
+
+  - id: api-docs-stock-management
+    title: "Stock Management APIs"
+    source: "Docs/API Docs/API_DOCUMENTATION_WITH_LOGIC.md"
+    section: "19. Stock Management"
+    content: |
+      Inventory queries for variants (single + paginated).
+      Returns approval workflow (pending, approve, reject) with inventory adjustments.
+
+  - id: api-list-summary
+    title: "API Counts & Categorization"
+    source: "Docs/API Docs/COMPLETE_API_LIST.md"
+    section: "Summary Statistics"
+    content: |
+      Document lists 113 APIs across 19 categories (Server Health, Product Metrics, Core Analytics, Geographic Analytics, Source Analytics, Amazon Entity Report, Content Generation, Customer Orders, Shipping Waybill/Download/Pincode, Database Analytics, User Management, Procurement, Master Vendor/Product, Receiving Purchase Requests, Receiving Quality Checks, Stock Management).
+
+  - id: api-list-auth-rates
+    title: "Authentication & Rate Limiting Overview"
+    source: "Docs/API Docs/COMPLETE_API_LIST.md"
+    section: "Authentication & Rate Limiting"
+    content: |
+      All /api/* routes require Firebase Auth; specific roles gate user management, master data, receiving, stock APIs.
+      Rate limiting varies: strict on bulk uploads, lenient on auth endpoints, standard elsewhere.
+
+

@@ -39,9 +39,10 @@ class LangchainMCPDatabaseClient:
         sql: str,
         params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        sql_upper = sql.strip().upper()
-        if not sql_upper.startswith("SELECT"):
-            return self._error("Only SELECT statements are allowed.")
+        sql_clean = sql.strip()
+        sql_upper = sql_clean.upper()
+        if not sql_upper.startswith(("SELECT", "WITH")):
+            return self._error("Only read-only SELECT queries are permitted.")
 
         for keyword in _FORBIDDEN_KEYWORDS:
             if keyword in sql_upper:
