@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import time
+import re
+from copy import deepcopy
 from typing import Any, Dict, List, Optional, TypedDict
 
 from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.graph import END, START, StateGraph
 
-from Agents.ApiDocsAgent import ApiDocsAgent
+from Agents.ApiDocsAgent import ApiAgent
 from Agents.ComputationAgent import ComputationAgent
 from Agents.core.models import (
     AgentError,
@@ -25,6 +27,7 @@ from Agents.core.models import (
 from Agents.QueryAgent.config import ConfigurationError
 from Agents.QueryAgent.sql_agent import compile_sql_agent
 from Agents.QueryAgent.state import SQLAgentState
+from Agents.ValidationAgent import AnswerValidationAgent
 
 from .composer import Composer
 from .planner import Planner
@@ -37,11 +40,15 @@ class OrchestratorState(TypedDict, total=False):
     agent_results: List[AgentResult]
     trace: List[TraceEvent]
     response: OrchestratorResponse
+    turn: int
+    max_turns: int
+    needs_replan: bool
 
 
 _SQL_GRAPH = compile_sql_agent()
 _COMPUTATION_AGENT = ComputationAgent()
-_API_DOCS_AGENT = ApiDocsAgent()
+_docs_AGENT = ApiAgent()
+_VALIDATION_AGENT = AnswerValidationAgent()
 _COMPOSER = Composer()
 _PLANNER = Planner()
 
@@ -50,6 +57,9 @@ _MAX_SQL_AGENT_RETRIES = 3
 
 def plan_node(state: OrchestratorState) -> OrchestratorState:
     request = state["request"]
+    turn = state.get("turn", 1)
+    max_turns = state.get("max_turns", request.max_turns or 3)
+
     decision = _PLANNER.plan(
         question=request.question,
         prefer=request.prefer_agents,
@@ -58,6 +68,7 @@ def plan_node(state: OrchestratorState) -> OrchestratorState:
     )
 
     trace = list(state.get("trace", []))
+    retrieval_hits = decision.guardrails.get("retrieval_hits") or {}
     trace.append(
         TraceEvent(
             event_type=TraceEventType.DECISION,
@@ -66,16 +77,51 @@ def plan_node(state: OrchestratorState) -> OrchestratorState:
             data={
                 "agents": list(decision.chosen_agents),
                 "confidence": decision.confidence,
+                "capability_scores": {
+                    agent: float(score)
+                    for agent, score in (decision.guardrails.get("capability_scores") or {}).items()
+                },
+                "retrieval_preview": {
+                    agent: hits[:1] for agent, hits in retrieval_hits.items() if hits
+                },
             },
         )
     )
 
+    pending_agents = list(decision.chosen_agents)
+    context = dict(request.context)
+    avoid_docs = bool(context.get("_avoid_docs_once"))
+    capability_scores = decision.guardrails.get("capability_scores") or {}
+    docs_score = capability_scores.get("docs", 0.0)
+    if not avoid_docs and (
+        "docs" not in pending_agents
+        and "docs" not in request.disable_agents
+        and docs_score > 0.0
+    ):
+        pending_agents.insert(0, "docs")
+        trace.append(
+            TraceEvent(
+                event_type=TraceEventType.MESSAGE,
+                agent="planner",  # type: ignore[assignment]
+                message="Inserted docs agent due to capability score",
+                data={"docs_score": float(docs_score)},
+            )
+        )
+    elif avoid_docs:
+        pending_agents = [agent for agent in pending_agents if agent != "docs"]
+        if context.get("_avoid_docs_once"):
+            context["_avoid_docs_once"] = False
+            request = request.model_copy(update={"context": context})
+
     return {
         "request": request,
         "planner": decision,
-        "pending_agents": list(decision.chosen_agents),
+        "pending_agents": pending_agents,
         "agent_results": state.get("agent_results", []),
         "trace": trace,
+        "turn": turn,
+        "max_turns": max_turns,
+        "needs_replan": False,
     }
 
 
@@ -98,8 +144,8 @@ def execute_agent(state: OrchestratorState) -> OrchestratorState:
         result = _run_sql_agent(request.question, request.context)
     elif agent == "computation":
         result = _COMPUTATION_AGENT.invoke(request.question, context=request.context)
-    elif agent == "api_docs":
-        result = _run_api_docs_agent(request.question, request.context)
+    elif agent == "docs":
+        result = _run_docs_agent(request.question, request.context)
     else:
         result = AgentResult(
             agent=agent,
@@ -114,11 +160,25 @@ def execute_agent(state: OrchestratorState) -> OrchestratorState:
     existing_results = list(state.get("agent_results", []))
     existing_results.append(result)
 
+    if _should_short_circuit(state["request"], result):
+        trace.append(
+            TraceEvent(
+                event_type=TraceEventType.MESSAGE,
+                agent=result.agent,  # type: ignore[assignment]
+                message="Short-circuiting remaining agents after successful result",
+                data={"terminated_after": result.agent},
+            )
+        )
+        pending = []
+
     return {
         "request": request,
         "pending_agents": pending,
         "agent_results": existing_results,
         "trace": trace,
+        "turn": state.get("turn", 1),
+        "max_turns": state.get("max_turns", request.max_turns or 3),
+        "needs_replan": state.get("needs_replan", False),
     }
 
 
@@ -152,13 +212,161 @@ def compose_node(state: OrchestratorState) -> OrchestratorState:
         )
     )
 
-    if request.trace:
-        response = response.model_copy(update={"trace": trace})
+    return {
+        "request": request,
+        "response": response,
+        "trace": trace,
+        "agent_results": agent_results,
+        "planner": planner,
+        "turn": state.get("turn", 1),
+        "max_turns": state.get("max_turns", request.max_turns or 3),
+        "needs_replan": state.get("needs_replan", False),
+    }
+
+
+def _route_after_compose(state: OrchestratorState) -> str:
+    return "validate"
+
+
+def validate_node(state: OrchestratorState) -> OrchestratorState:
+    request = state["request"]
+    response = state.get("response")
+    agent_results = list(state.get("agent_results", []))
+    trace = list(state.get("trace", []))
+    turn = state.get("turn", 1)
+    max_turns = state.get("max_turns", request.max_turns or 3)
+
+    if response is None:
+        validation_result = AgentResult(
+            agent="validator",
+            status=AgentExecutionStatus.failed,
+            answer="Validation failed: response missing.",
+            trace=[
+                TraceEvent(
+                    event_type=TraceEventType.ERROR,
+                    agent="validator",  # type: ignore[assignment]
+                    message="No composed response available for validation.",
+                )
+            ],
+        )
+    else:
+        validation_result = _VALIDATION_AGENT.invoke(
+            question=request.question,
+            final_answer=response.answer,
+            agent_results=agent_results,
+        )
+
+    if validation_result.trace:
+        trace.extend(validation_result.trace)
+    agent_results.append(validation_result)
+
+    satisfied = validation_result.status == AgentExecutionStatus.succeeded
+    if satisfied:
+        trace.append(
+            TraceEvent(
+                event_type=TraceEventType.MESSAGE,
+                agent="validator",  # type: ignore[assignment]
+                message="Answer satisfied validation.",
+            )
+        )
+        return {
+            "request": request,
+            "response": response,
+            "trace": trace,
+            "agent_results": agent_results,
+            "planner": state.get("planner"),
+            "turn": turn,
+            "max_turns": max_turns,
+            "needs_replan": False,
+        }
+
+    if turn >= max_turns:
+        trace.append(
+            TraceEvent(
+                event_type=TraceEventType.MESSAGE,
+                agent="validator",  # type: ignore[assignment]
+                message="Validation failed but maximum turns reached; returning best effort answer.",
+                data={"turn": turn, "max_turns": max_turns},
+            )
+        )
+        return {
+            "request": request,
+            "response": response,
+            "trace": trace,
+            "agent_results": agent_results,
+            "planner": state.get("planner"),
+            "turn": turn,
+            "max_turns": max_turns,
+            "needs_replan": False,
+        }
+
+    feedback = validation_result.answer or (
+        validation_result.error.message if validation_result.error else "Validation failed."
+    )
+    updated_context = dict(request.context)
+    feedback_history = list(updated_context.get("_validation_feedback", []))
+    feedback_history.append({"turn": turn, "feedback": feedback})
+    updated_context["_validation_feedback"] = feedback_history
+    updated_context["_avoid_docs_once"] = True
+    new_request = request.model_copy(update={"context": updated_context})
+
+    trace.append(
+        TraceEvent(
+            event_type=TraceEventType.MESSAGE,
+            agent="validator",  # type: ignore[assignment]
+            message="Validation failed; replanning.",
+            data={"turn": turn + 1, "feedback": feedback},
+        )
+    )
+
+    return {
+        "request": new_request,
+        "trace": trace,
+        "agent_results": [],
+        "turn": turn + 1,
+        "max_turns": max_turns,
+        "needs_replan": True,
+    }
+
+
+def _route_after_validate(state: OrchestratorState) -> str:
+    if state.get("needs_replan"):
+        return "plan"
+    return "finalize"
+
+
+def finalize_node(state: OrchestratorState) -> OrchestratorState:
+    request = state["request"]
+    response = state.get("response")
+    trace = list(state.get("trace", []))
+    agent_results = list(state.get("agent_results", []))
+    planner = state.get("planner")
+
+    if response is None:
+        raise RuntimeError("Finalize invoked without response")  # pragma: no cover - defensive
+
+    metadata = dict(response.metadata or {})
+    metadata.setdefault("turns", state.get("turn", 1))
+    metadata.setdefault("max_turns", state.get("max_turns", request.max_turns or 3))
+
+    response = response.model_copy(
+        update={
+            "agent_results": agent_results,
+            "planner": planner,
+            "metadata": metadata,
+            "trace": trace if request.trace else [],
+        }
+    )
 
     return {
         "request": request,
         "response": response,
         "trace": trace,
+        "agent_results": agent_results,
+        "planner": planner,
+        "turn": state.get("turn", 1),
+        "max_turns": state.get("max_turns", request.max_turns or 3),
+        "needs_replan": False,
     }
 
 
@@ -167,6 +375,8 @@ def compile_orchestrator() -> StateGraph:
     workflow.add_node("plan", plan_node)
     workflow.add_node("execute_agent", execute_agent)
     workflow.add_node("compose", compose_node)
+    workflow.add_node("validate", validate_node)
+    workflow.add_node("finalize", finalize_node)
 
     workflow.set_entry_point("plan")
     workflow.add_edge(START, "plan")
@@ -180,7 +390,13 @@ def compile_orchestrator() -> StateGraph:
         _route_after_execute,
         {"execute_agent": "execute_agent", "compose": "compose"},
     )
-    workflow.add_edge("compose", END)
+    workflow.add_edge("compose", "validate")
+    workflow.add_conditional_edges(
+        "validate",
+        _route_after_validate,
+        {"plan": "plan", "finalize": "finalize"},
+    )
+    workflow.add_edge("finalize", END)
 
     return workflow
 
@@ -383,22 +599,22 @@ def _build_sql_agent_failure(
     )
 
 
-def _run_api_docs_agent(question: str, context: Optional[Dict[str, Any]]) -> AgentResult:
+def _run_docs_agent(question: str, context: Optional[Dict[str, Any]]) -> AgentResult:
     start = time.perf_counter()
     try:
-        result = _API_DOCS_AGENT.invoke(question, context=context or {})
+        result = _docs_AGENT.invoke(question, context=context or {})
     except Exception as exc:  # pragma: no cover - defensive
         latency = (time.perf_counter() - start) * 1000
         error = AgentError(message=str(exc), type=type(exc).__name__)
         return AgentResult(
-            agent="api_docs",
+            agent="docs",
             status=AgentExecutionStatus.failed,
             error=error,
             trace=[
                 TraceEvent(
                     event_type=TraceEventType.ERROR,
-                    agent="api_docs",  # type: ignore[assignment]
-                    message="ApiDocsAgent invocation raised an exception",
+                    agent="docs",  # type: ignore[assignment]
+                    message="ApiAgent invocation raised an exception",
                     data={"exception": str(exc)},
                 )
             ],
@@ -407,6 +623,24 @@ def _run_api_docs_agent(question: str, context: Optional[Dict[str, Any]]) -> Age
 
     result.latency_ms = (time.perf_counter() - start) * 1000
     return result
+
+
+def _should_short_circuit(request: AgentRequest, result: AgentResult) -> bool:
+    if result.status != AgentExecutionStatus.succeeded:
+        return False
+    if result.agent == "docs":
+        answer = (result.answer or "").strip()
+        if not answer:
+            return False
+        lower_question = request.question.lower()
+        if any(phrase in lower_question for phrase in ("how many", "count", "number of", "total", "sum")):
+            return bool(re.search(r"\d", answer))
+        return False
+    if result.agent == "sql":
+        if result.tabular and result.tabular.row_count and request.include_data:
+            return True
+        return bool(result.answer and result.answer.strip() and not request.include_data)
+    return False
 
 
 __all__ = ["compile_orchestrator", "OrchestratorState"]

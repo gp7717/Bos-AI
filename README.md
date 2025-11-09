@@ -57,9 +57,10 @@ Component Breakdown
   - Sequentially invokes agents chosen by the planner and records per-agent latency, output, and errors.
 
 - **Planner (`Agents/orchestrator/planner.py`)**
-  - Combines heuristic keyword matching with an LLM (`AzureChatOpenAI`) to rank eligible agents.
-  - Produces a `PlannerDecision` containing rationale, agent ordering, confidence score, and applied guardrails.
-  - Applies preference/disable lists from the incoming `AgentRequest`.
+  - Builds per-agent retrieval indexes (`context_index.AgentContextRetriever`) and feeds top snippets into a capability classifier.
+  - Scores agents with structured capability metadata, then asks the LLM arbiter to rank/trim the agents using the evidence bundle.
+  - Produces a `PlannerDecision` with rationale, ordered agents, confidence, and guardrail metadata (capability scores, retrieval preview).
+  - Applies preference/disable lists from the incoming `AgentRequest` and falls back to capability scores if the LLM is unavailable.
 
 - **Composer (`Agents/orchestrator/composer.py`)**
   - Uses an LLM prompt to consolidate agent answers into the final `OrchestratorResponse`.
@@ -72,7 +73,7 @@ Component Breakdown
   - Automatically retries failed SQL executions (default 3 attempts). Each retry feeds the database error back into the LLM so follow-up queries can self-correct.
   - Enforces read-only usage through forbidden pattern checks and explicit allowed-table filters.
 - **API Docs Agent (`Agents/ApiDocsAgent`)**
-  - Loads curated context from `Docs/api_docs_context.yaml`, retrieves the most relevant snippets, and answers REST API questions with the shared Azure LLM.
+  - Loads curated context from `Docs/docs_context.yaml`, retrieves the most relevant snippets, and answers REST API questions with the shared Azure LLM.
   - Returns rich trace events referencing the documentation chunks used, enabling auditable responses.
 
 - **Computation Agent (`Agents/ComputationAgent/agent.py`)**

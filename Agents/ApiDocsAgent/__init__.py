@@ -1,10 +1,3 @@
-from .agent import ApiDocsAgent, compile_api_docs_agent
+from .agent import ApiAgent, compile_docs_agent
 
-__all__ = ["ApiDocsAgent", "compile_api_docs_agent"]
-"""Public exports for the API documentation agent."""
-
-from .agent import ApiDocsAgent
-
-__all__ = ["ApiDocsAgent"]
-
-
+__all__ = ["ApiAgent", "compile_docs_agent"]
