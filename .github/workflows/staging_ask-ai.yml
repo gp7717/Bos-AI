@@ -70,3 +70,4 @@ jobs:
           # This is the *App Service name* (from the portal), which matches your publish profile
           app-name: "Ask-AI"
           package: "."
+
