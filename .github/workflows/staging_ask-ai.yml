@@ -25,7 +25,7 @@ jobs:
         with:
           python-version: "3.10"
 
-      # Optional local build step (catches issues early)
+      # Optional: local build to catch issues early
       - name: Create and start virtual environment and install dependencies
         run: |
           python -m venv antenv
@@ -44,6 +44,9 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     needs: build
+    permissions:
+      id-token: write   # for OIDC to Azure
+      contents: read
 
     steps:
       - name: Download artifact from build job
@@ -51,13 +54,19 @@ jobs:
         with:
           name: python-app
 
+      # 🔐 Login to Azure using your service principal secrets
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_996A560B3A9D41D583DBBB1A74CDC2B5 }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_800FE9CA2E8D4E55AFBA5B2978E1A3DE }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_5B3BDC6455204AC7A1547B6AE5A17E9B }}
+
+      # 🚀 Deploy using the logged-in context (no publish profile needed)
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v2
         id: deploy-to-webapp
         with:
-          # 👇 This must match the site name in your publish profile XML (Ask-AI - Web Deploy)
+          # This is the *App Service name* (from the portal), which matches your publish profile
           app-name: "Ask-AI"
-          # 👇 Secret containing the entire publish profile XML you pasted
-          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_ASK_AI }}
-          # Deploy the current directory (the downloaded artifact)
           package: "."
