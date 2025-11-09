@@ -1,6 +1,7 @@
+"""Retrieval-backed agent for answering questions about REST API endpoints."""
+
 from __future__ import annotations
 
-import json
 import logging
 import math
 import re
@@ -10,7 +11,6 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import yaml
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnableLambda
 
 from Agents.QueryAgent.config import get_resources
 from Agents.core.models import (
@@ -142,7 +142,7 @@ class ApiAgent:
         self,
         question: str,
         *,
-        context: Optional[Dict[str, Any]] = None,
+        context: Optional[Dict[str, Any]] = None,  # noqa: ARG002 - reserved for future use
     ) -> AgentResult:
         """Answer a question using retrieved API documentation context."""
 
@@ -151,7 +151,9 @@ class ApiAgent:
                 "Safety policy: the API Docs agent cannot assist with update or delete "
                 "operations or other mutating REST calls."
             )
-            logger.warning("Blocked mutating API documentation question", extra={"question": question})
+            logger.warning(
+                "Blocked mutating API documentation question", extra={"question": question}
+            )
             trace = [
                 TraceEvent(
                     event_type=TraceEventType.ERROR,
@@ -294,3 +296,5 @@ def compile_docs_agent(**kwargs: Any) -> ApiAgent:
     return ApiAgent(**kwargs)
 
 
+ApiDocsAgent = ApiAgent
+compile_api_docs_agent = compile_docs_agent

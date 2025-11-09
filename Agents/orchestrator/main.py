@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+from typing import Sequence
+
 import uvicorn
 
 
-def parse_args() -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
+    """Construct the shared CLI parser for orchestrator launch commands."""
     parser = argparse.ArgumentParser(description="Run the Agentic orchestrator FastAPI server")
     parser.add_argument("--host", default="0.0.0.0", help="Host interface to bind")
     parser.add_argument("--port", type=int, default=8080, help="Port to listen on")
@@ -15,16 +18,22 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable autoreload (for development only)",
     )
-    return parser.parse_args()
+    return parser
 
 
-def main() -> None:
-    args = parse_args()
+def parse_args(args: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parse CLI arguments, optionally from a provided sequence for reuse."""
+    return build_parser().parse_args(args=args)
+
+
+def main(args: Sequence[str] | None = None) -> None:
+    """Entry point for running the orchestrator via `python -m`."""
+    parsed = parse_args(args)
     uvicorn.run(
         "Agents.orchestrator.server:app",
-        host=args.host,
-        port=args.port,
-        reload=args.reload,
+        host=parsed.host,
+        port=parsed.port,
+        reload=parsed.reload,
     )
 
 
