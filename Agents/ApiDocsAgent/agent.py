@@ -829,9 +829,9 @@ class ApiDocsAgent:
             direct_token=direct_token,
             token_file=token_file,
 
-            web_api_key=context.get("firebase_web_api_key") or os.getenv("FIREBASE_WEB_API_KEY") or os.getenv('FIREBASE_WEB_API_KEY', 'AIzaSyDbj3djWL14hivgsqHTYORk91ROqqGJrZ4'),
-            email=context.get("firebase_email") or os.getenv("FIREBASE_EMAIL") or os.getenv('FIREBASE_EMAIL', 'nishant@seleric.ai'),
-            password=context.get("firebase_password") or os.getenv("FIREBASE_PASSWORD") or os.getenv('FIREBASE_PASSWORD', 'Nishant'),
+            web_api_key=context.get("firebase_web_api_key") or os.getenv("FIREBASE_WEB_API_KEY"),
+            email=context.get("firebase_email") or os.getenv("FIREBASE_EMAIL"),
+            password=context.get("firebase_password") or os.getenv("FIREBASE_PASSWORD"),
             context_headers=dict(context_headers or {}),
         )
         return config

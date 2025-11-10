@@ -309,3 +309,28 @@ tables:
       - roas
       - created_at
       - updated_at
+
+
+  public.procurement_product:
+    description: Procurement master list of products with category, status, and price category.
+    columns:
+      - product_id
+      - product_name
+      - product_category
+      - status
+      - product_price_category
+      - created_at
+      - updated_by
+      - updated_at
+
+  public.inventory_events:
+    description: Tracks stock-impacting events from cancelled and returned Shopify orders.
+    columns:
+      - event_id                # Unique identifier for each stock-impacting event
+      - order_id                # Links back to the order; helps correlate with sales data
+      - variant_id              # Identifies which product variant was affected
+      - event_type              # CANCEL or RETURN (how to handle the event)
+      - qty_delta               # Signed quantity change: negative for cancel, positive for return
+      - updated_at              # When the event actually happened (for timeline/audit)
+      - external_ref            # Shopify Return ID, Order Cancel ID, or webhook ID (prevents duplicate inserts)
+      - created_at              # When this record was logged in the system
