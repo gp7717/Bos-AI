@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, TypedDict
 
 from langchain_core.messages import BaseMessage, HumanMessage
@@ -48,8 +49,28 @@ _PLANNER = Planner()
 _MAX_SQL_AGENT_RETRIES = 3
 
 
+def _attach_temporal_context(request: AgentRequest) -> AgentRequest:
+    base_context = dict(request.context or {})
+    now_utc = datetime.now(timezone.utc)
+
+    updated = False
+    if "current_datetime_utc" not in base_context:
+        base_context["current_datetime_utc"] = now_utc.isoformat()
+        updated = True
+    if "current_date" not in base_context:
+        iso_date = now_utc.date().isoformat()
+        base_context["current_date"] = iso_date
+        base_context.setdefault("current_date_start_hour", f"{iso_date} 00")
+        base_context.setdefault("current_date_end_hour", f"{iso_date} 23")
+        updated = True
+
+    if not updated:
+        return request
+    return request.model_copy(update={"context": base_context})
+
+
 def plan_node(state: OrchestratorState) -> OrchestratorState:
-    request = state["request"]
+    request = _attach_temporal_context(state["request"])
     decision = _PLANNER.plan(
         question=request.question,
         prefer=request.prefer_agents,
