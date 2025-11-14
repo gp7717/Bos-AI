@@ -19,6 +19,7 @@ from Agents.core.models import (
     AgentResult,
     OrchestratorResponse,
     PlannerDecision,
+    RouterDecision,
     TabularResult,
     TraceEvent,
     TraceEventType,
@@ -29,10 +30,12 @@ from Agents.QueryAgent.state import SQLAgentState
 
 from .composer import Composer
 from .planner import Planner
+from .router import Router
 
 
 class OrchestratorState(TypedDict, total=False):
     request: AgentRequest
+    router: RouterDecision
     planner: PlannerDecision
     pending_agents: List[AgentName]
     agent_results: List[AgentResult]
@@ -45,6 +48,7 @@ _COMPUTATION_AGENT = ComputationAgent()
 _API_DOCS_AGENT = ApiDocsAgent()
 _COMPOSER = Composer()
 _PLANNER = Planner()
+_ROUTER = Router()
 
 _MAX_SQL_AGENT_RETRIES = 3
 
@@ -67,6 +71,42 @@ def _attach_temporal_context(request: AgentRequest) -> AgentRequest:
     if not updated:
         return request
     return request.model_copy(update={"context": base_context})
+
+
+def router_node(state: OrchestratorState) -> OrchestratorState:
+    """Route query to determine if agents are needed."""
+    request = _attach_temporal_context(state["request"])
+    decision = _ROUTER.route(
+        question=request.question,
+        context=request.context,
+    )
+
+    trace = list(state.get("trace", []))
+    trace.append(
+        TraceEvent(
+            event_type=TraceEventType.DECISION,
+            agent="router",
+            message="Router classified query",
+            data={
+                "route_type": decision.route_type,
+                "confidence": decision.confidence,
+            },
+        )
+    )
+
+    return {
+        "request": request,
+        "router": decision,
+        "trace": trace,
+    }
+
+
+def _route_after_router(state: OrchestratorState) -> str:
+    """Route after router decision: simple_response -> compose, needs_agents -> plan."""
+    router = state.get("router")
+    if router and router.route_type == "simple_response":
+        return "compose"
+    return "plan"
 
 
 def plan_node(state: OrchestratorState) -> OrchestratorState:
@@ -151,19 +191,34 @@ def _route_after_execute(state: OrchestratorState) -> str:
 
 def compose_node(state: OrchestratorState) -> OrchestratorState:
     request = state["request"]
+    router = state.get("router")
     planner = state.get("planner")
     agent_results = state.get("agent_results", [])
     trace = list(state.get("trace", []))
 
-    response = _COMPOSER.compose(
-        question=request.question,
-        planner_rationale=planner.rationale if planner else "",
-        agent_results=agent_results,
-        metadata={
-            "confidence": planner.confidence if planner else None,
-            "agents": [result.agent for result in agent_results],
-        },
-    )
+    # Check if this is a simple response (no agents needed)
+    if router and router.route_type == "simple_response":
+        response = _COMPOSER.compose_simple_response(
+            question=request.question,
+            router_rationale=router.rationale,
+            context=request.context,
+            metadata={
+                "confidence": router.confidence,
+                "route_type": router.route_type,
+            },
+        )
+    else:
+        # Regular composer with agent results
+        response = _COMPOSER.compose(
+            question=request.question,
+            planner_rationale=planner.rationale if planner else "",
+            agent_results=agent_results,
+            context=request.context,
+            metadata={
+                "confidence": planner.confidence if planner else None,
+                "agents": [result.agent for result in agent_results],
+            },
+        )
 
     trace.append(
         TraceEvent(
@@ -185,12 +240,18 @@ def compose_node(state: OrchestratorState) -> OrchestratorState:
 
 def compile_orchestrator() -> StateGraph:
     workflow = StateGraph(OrchestratorState)
+    workflow.add_node("route", router_node)
     workflow.add_node("plan", plan_node)
     workflow.add_node("execute_agent", execute_agent)
     workflow.add_node("compose", compose_node)
 
-    workflow.set_entry_point("plan")
-    workflow.add_edge(START, "plan")
+    workflow.set_entry_point("route")
+    workflow.add_edge(START, "route")
+    workflow.add_conditional_edges(
+        "route",
+        _route_after_router,
+        {"compose": "compose", "plan": "plan"},
+    )
     workflow.add_conditional_edges(
         "plan",
         _route_after_plan,

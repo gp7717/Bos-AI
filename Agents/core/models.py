@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple
 from pydantic import BaseModel, Field, field_validator
 
 
-AgentName = Literal["sql", "computation", "planner", "composer", "api_docs"]
+AgentName = Literal["sql", "computation", "planner", "composer", "api_docs", "router"]
 
 
 class AgentExecutionStatus(str, Enum):
@@ -89,6 +89,14 @@ class PlannerDecision(BaseModel):
     guardrails: Dict[str, Any] = Field(default_factory=dict)
 
 
+class RouterDecision(BaseModel):
+    """Router output describing whether agents are needed for the query."""
+
+    route_type: Literal["simple_response", "needs_agents"]
+    rationale: str
+    confidence: Optional[float] = None
+
+
 class AgentRequest(BaseModel):
     """Canonical request payload accepted by the orchestrator."""
 
@@ -155,6 +163,7 @@ __all__ = [
     "AgentResult",
     "OrchestratorResponse",
     "PlannerDecision",
+    "RouterDecision",
     "TabularResult",
     "TraceEvent",
     "TraceEventType",
