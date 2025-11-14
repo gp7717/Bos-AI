@@ -11,7 +11,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda
 from langchain_openai import AzureChatOpenAI
 
-from Agents.core.models import AgentResult, OrchestratorResponse, TabularResult
+from Agents.core.models import AgentResult, GraphResult, OrchestratorResponse, Scratchpad, TabularResult
 from Agents.QueryAgent.config import get_resources
 
 logger = logging.getLogger(__name__)
@@ -167,7 +167,14 @@ class Composer:
                         "If no data is available or no rows are returned, clearly state that no data was returned."
                         "Use Indian Rupees (Rs.) with commas and two decimals for all monetary amounts (e.g., Rs.1,75,206.00), never ₹ or INR. "
                         "Be professional. Do not use emojis, hashtags, or unnecessary formatting—only use '\\n' for new lines. "
-                        "Do not include boilerplate, incomplete placeholders, or repeat explanations. Only summarize the most important findings and information relevant to the user question."
+                        "Do not include boilerplate, incomplete placeholders, or repeat explanations. Only summarize the most important findings and information relevant to the user question. "
+                        "CRITICAL: NEVER generate SVG, HTML, or any visualization code. NEVER ask for clarification about graph formats, granularity, or output types. "
+                        "If the user requested a graph/chart and graph data is available in the response, simply mention that the visualization has been generated and provide a summary of the data insights. "
+                        "If graph data is not yet available but the user requested visualization, the graph agent will handle it automatically - just summarize the available data. "
+                        "The graph data is handled separately by the graph agent - you should only provide a text summary of the data. "
+                        "IMPORTANT: Use the shared memory/scratchpad context to provide meaningful data summaries. When tabular data is available, "
+                        "provide key insights, trends, and notable findings from the data rather than just stating row counts. "
+                        "For example, if sales data is provided, mention key metrics like total revenue, peak periods, trends, or notable patterns."
                     ),
                 ),
                 (
@@ -175,6 +182,7 @@ class Composer:
                     (
                         "User question: {question}\n"
                         "Planner rationale: {planner_rationale}\n"
+                        "Shared Memory/Context:\n{scratchpad_summary}\n"
                         "Agent summaries:\n{agent_summaries}"
                     ),
                 ),
@@ -208,10 +216,12 @@ class Composer:
         agent_results: Iterable[AgentResult],
         context: Optional[dict] = None,
         metadata: Optional[dict] = None,
+        scratchpad: Optional[Scratchpad] = None,
     ) -> OrchestratorResponse:
         results = list(agent_results)
         summaries = []
         tabular = self._select_tabular(results)
+        graph = self._select_graph(results)
         
         # Normalize tabular data to ensure proper serialization for tables
         normalized_tabular = _normalize_tabular_data(tabular)
@@ -225,11 +235,19 @@ class Composer:
                 base += f" Error: {result.error.message}"
             summaries.append(base)
 
+        # Get scratchpad summary for context
+        scratchpad_summary = ""
+        if scratchpad:
+            scratchpad_summary = scratchpad.get_summary()
+        else:
+            scratchpad_summary = "No shared memory context available."
+
         llm_response = self._prompt | self.llm | RunnableLambda(lambda message: message.content)
         answer = llm_response.invoke(
             {
                 "question": question,
                 "planner_rationale": planner_rationale,
+                "scratchpad_summary": scratchpad_summary,
                 "agent_summaries": "\n".join(summaries) or "No agents produced outputs.",
             }
         )
@@ -237,6 +255,7 @@ class Composer:
         return OrchestratorResponse(
             answer=str(answer),
             data=normalized_tabular,
+            graph=graph,
             agent_results=results,
             metadata=metadata or {},
         )
@@ -276,6 +295,14 @@ class Composer:
         for result in results:
             if result.tabular:
                 return result.tabular
+        return None
+
+    @staticmethod
+    def _select_graph(results: Iterable[AgentResult]) -> Optional[GraphResult]:
+        """Select the first graph result from agent results."""
+        for result in results:
+            if result.graph:
+                return result.graph
         return None
 
 

@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple
 from pydantic import BaseModel, Field, field_validator
 
 
-AgentName = Literal["sql", "computation", "planner", "composer", "api_docs", "router"]
+AgentName = Literal["sql", "computation", "planner", "composer", "api_docs", "router", "graph"]
 
 
 class AgentExecutionStatus(str, Enum):
@@ -50,6 +50,26 @@ class TabularResult(BaseModel):
         return value
 
 
+class GraphResult(BaseModel):
+    """Structured representation of graph/chart data returned by an agent."""
+
+    chart_type: Literal["line", "bar", "pie", "scatter", "area"] = Field(
+        ..., description="Type of chart to render"
+    )
+    x_axis: str = Field(..., description="Column name or label for x-axis")
+    y_axis: str | List[str] = Field(..., description="Column name(s) or label(s) for y-axis")
+    data: List[Dict[str, Any]] = Field(
+        ..., description="Simplified/aggregated data points for the graph"
+    )
+    title: Optional[str] = Field(None, description="Chart title")
+    x_label: Optional[str] = Field(None, description="X-axis label")
+    y_label: Optional[str] = Field(None, description="Y-axis label")
+    aggregation: Optional[str] = Field(
+        None, description="Aggregation method applied (e.g., 'daily', 'monthly', 'sum', 'average')"
+    )
+    trend_analysis: Optional[str] = Field(None, description="LLM-generated trend insights")
+
+
 class AgentError(BaseModel):
     """Standard error envelope for agent executions."""
 
@@ -66,6 +86,83 @@ class TraceEvent(BaseModel):
     data: Dict[str, Any] = Field(default_factory=dict)
     message: Optional[str] = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class MemoryEntry(BaseModel):
+    """A single entry in the shared memory/scratchpad."""
+
+    agent: AgentName
+    category: Literal["finding", "data_summary", "insight", "context", "error"] = Field(
+        default="finding", description="Category of memory entry"
+    )
+    content: str = Field(..., description="The actual memory content")
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+
+
+class Scratchpad(BaseModel):
+    """Shared memory/context window for agents to read/write during execution."""
+
+    entries: List[MemoryEntry] = Field(default_factory=list, description="Chronological memory entries")
+    max_entries: int = Field(
+        default=50, description="Maximum number of entries to keep (FIFO when exceeded)"
+    )
+
+    def add(
+        self,
+        agent: AgentName,
+        content: str,
+        category: Literal["finding", "data_summary", "insight", "context", "error"] = "finding",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Add a new memory entry."""
+        entry = MemoryEntry(
+            agent=agent,
+            category=category,
+            content=content,
+            metadata=metadata or {},
+        )
+        self.entries.append(entry)
+        # Maintain max_entries limit (FIFO)
+        if len(self.entries) > self.max_entries:
+            self.entries = self.entries[-self.max_entries :]
+
+    def get_by_agent(self, agent: AgentName) -> List[MemoryEntry]:
+        """Get all entries from a specific agent."""
+        return [entry for entry in self.entries if entry.agent == agent]
+
+    def get_by_category(
+        self, category: Literal["finding", "data_summary", "insight", "context", "error"]
+    ) -> List[MemoryEntry]:
+        """Get all entries of a specific category."""
+        return [entry for entry in self.entries if entry.category == category]
+
+    def get_recent(self, limit: int = 10) -> List[MemoryEntry]:
+        """Get the most recent entries."""
+        return self.entries[-limit:] if len(self.entries) > limit else self.entries
+
+    def get_summary(self) -> str:
+        """Get a formatted summary of all entries for LLM consumption."""
+        if not self.entries:
+            return "No memory entries available."
+
+        lines = ["=== Shared Memory/Scratchpad ==="]
+        for entry in self.entries[-20:]:  # Last 20 entries
+            timestamp_str = entry.timestamp.strftime("%H:%M:%S")
+            lines.append(f"[{timestamp_str}] {entry.agent.upper()} ({entry.category}): {entry.content}")
+        return "\n".join(lines)
+
+    def get_data_summaries(self) -> Dict[str, str]:
+        """Get all data summaries keyed by agent."""
+        summaries = {}
+        for entry in self.entries:
+            if entry.category == "data_summary":
+                summaries[entry.agent] = entry.content
+        return summaries
+
+    def get_findings(self) -> List[str]:
+        """Get all findings across all agents."""
+        return [entry.content for entry in self.entries if entry.category == "finding"]
 
 
 class AgentExecutionStep(BaseModel):
@@ -126,7 +223,7 @@ class AgentRequest(BaseModel):
     @staticmethod
     def _coerce_agent(value: AgentName | str) -> AgentName:
         lookup = str(value).strip().lower()
-        if lookup not in {"sql", "computation", "planner", "composer", "api_docs"}:
+        if lookup not in {"sql", "computation", "planner", "composer", "api_docs", "graph"}:
             raise ValueError(f"Unsupported agent identifier: {value}")
         return lookup  # type: ignore[return-value]
 
@@ -138,6 +235,7 @@ class AgentResult(BaseModel):
     status: AgentExecutionStatus
     answer: Optional[str] = None
     tabular: Optional[TabularResult] = None
+    graph: Optional[GraphResult] = None
     error: Optional[AgentError] = None
     trace: List[TraceEvent] = Field(default_factory=list)
     latency_ms: Optional[float] = None
@@ -148,6 +246,7 @@ class OrchestratorResponse(BaseModel):
 
     answer: str
     data: Optional[TabularResult] = None
+    graph: Optional[GraphResult] = None
     agent_results: List[AgentResult] = Field(default_factory=list)
     trace: List[TraceEvent] = Field(default_factory=list)
     planner: Optional[PlannerDecision] = None
@@ -161,9 +260,12 @@ __all__ = [
     "AgentName",
     "AgentRequest",
     "AgentResult",
+    "GraphResult",
+    "MemoryEntry",
     "OrchestratorResponse",
     "PlannerDecision",
     "RouterDecision",
+    "Scratchpad",
     "TabularResult",
     "TraceEvent",
     "TraceEventType",

@@ -11,6 +11,7 @@ from langgraph.graph import END, START, StateGraph
 
 from Agents.ApiDocsAgent import ApiDocsAgent
 from Agents.ComputationAgent import ComputationAgent
+from Agents.GraphAgent import GraphAgent
 from Agents.core.models import (
     AgentError,
     AgentExecutionStatus,
@@ -20,6 +21,7 @@ from Agents.core.models import (
     OrchestratorResponse,
     PlannerDecision,
     RouterDecision,
+    Scratchpad,
     TabularResult,
     TraceEvent,
     TraceEventType,
@@ -41,11 +43,13 @@ class OrchestratorState(TypedDict, total=False):
     agent_results: List[AgentResult]
     trace: List[TraceEvent]
     response: OrchestratorResponse
+    scratchpad: Scratchpad
 
 
 _SQL_GRAPH = compile_sql_agent()
 _COMPUTATION_AGENT = ComputationAgent()
 _API_DOCS_AGENT = ApiDocsAgent()
+_GRAPH_AGENT = GraphAgent()
 _COMPOSER = Composer()
 _PLANNER = Planner()
 _ROUTER = Router()
@@ -94,10 +98,16 @@ def router_node(state: OrchestratorState) -> OrchestratorState:
         )
     )
 
+    # Initialize scratchpad if not present
+    scratchpad = state.get("scratchpad")
+    if scratchpad is None:
+        scratchpad = Scratchpad()
+
     return {
         "request": request,
         "router": decision,
         "trace": trace,
+        "scratchpad": scratchpad,
     }
 
 
@@ -131,12 +141,21 @@ def plan_node(state: OrchestratorState) -> OrchestratorState:
         )
     )
 
+    scratchpad = state.get("scratchpad") or Scratchpad()
+    # Add planner decision to scratchpad
+    scratchpad.add(
+        agent="planner",
+        content=f"Planned execution order: {', '.join(decision.chosen_agents)}. Rationale: {decision.rationale}",
+        category="context",
+    )
+
     return {
         "request": request,
         "planner": decision,
         "pending_agents": list(decision.chosen_agents),
         "agent_results": state.get("agent_results", []),
         "trace": trace,
+        "scratchpad": scratchpad,
     }
 
 
@@ -144,6 +163,87 @@ def _route_after_plan(state: OrchestratorState) -> str:
     if state.get("pending_agents"):
         return "execute_agent"
     return "compose"
+
+
+def _extract_data_summary(tabular: Optional[TabularResult]) -> str:
+    """Extract a concise summary of tabular data for scratchpad with key insights."""
+    if not tabular or not tabular.rows:
+        return "No data returned."
+    
+    row_count = tabular.row_count or len(tabular.rows)
+    columns = tabular.columns or []
+    
+    summary_parts = [f"Retrieved {row_count} rows"]
+    if columns:
+        summary_parts.append(f"with columns: {', '.join(columns[:5])}")
+        if len(columns) > 5:
+            summary_parts.append(f"(+{len(columns) - 5} more)")
+    
+    # Extract key insights from numeric columns
+    if tabular.rows and len(tabular.rows) > 0 and isinstance(tabular.rows[0], dict):
+        numeric_insights = []
+        
+        # Look for common numeric columns and calculate insights
+        for col in columns:
+            col_lower = col.lower()
+            values = []
+            for row in tabular.rows:
+                if isinstance(row, dict):
+                    val = row.get(col)
+                    if val is not None:
+                        try:
+                            # Try to convert to float
+                            num_val = float(str(val).replace(",", ""))
+                            values.append(num_val)
+                        except (ValueError, AttributeError):
+                            pass
+            
+            if values:
+                if "revenue" in col_lower or "amount" in col_lower or "total" in col_lower:
+                    total = sum(values)
+                    avg = total / len(values) if values else 0
+                    max_val = max(values)
+                    min_val = min(values)
+                    numeric_insights.append(
+                        f"{col}: total={total:,.0f}, avg={avg:,.0f}, max={max_val:,.0f}, min={min_val:,.0f}"
+                    )
+                elif "count" in col_lower or "orders" in col_lower:
+                    total = sum(values)
+                    avg = total / len(values) if values else 0
+                    max_val = max(values)
+                    numeric_insights.append(
+                        f"{col}: total={total:,.0f}, avg={avg:.1f}, max={max_val:,.0f}"
+                    )
+                elif "date" in col_lower or "time" in col_lower:
+                    # Extract date range (first and last row)
+                    if len(tabular.rows) > 0:
+                        first_row = tabular.rows[0]
+                        last_row = tabular.rows[-1]
+                        if isinstance(first_row, dict) and isinstance(last_row, dict):
+                            first_date = str(first_row.get(col, ""))
+                            last_date = str(last_row.get(col, ""))
+                            if first_date and last_date:
+                                if first_date != last_date:
+                                    numeric_insights.append(f"{col}: range from {first_date} to {last_date}")
+                                else:
+                                    numeric_insights.append(f"{col}: {first_date}")
+        
+        if numeric_insights:
+            summary_parts.append("Key metrics: " + "; ".join(numeric_insights[:3]))  # Limit to 3 insights
+    
+    # Add sample values if available
+    if tabular.rows and len(tabular.rows) > 0:
+        first_row = tabular.rows[0]
+        if isinstance(first_row, dict) and columns:
+            sample_values = []
+            for col in columns[:2]:  # First 2 columns for sample
+                val = first_row.get(col)
+                if val is not None:
+                    sample_values.append(f"{col}={val}")
+            if sample_values:
+                summary_parts.append(f"Sample row: {', '.join(sample_values)}")
+    
+    return ". ".join(summary_parts) + "."
 
 
 def execute_agent(state: OrchestratorState) -> OrchestratorState:
@@ -154,13 +254,32 @@ def execute_agent(state: OrchestratorState) -> OrchestratorState:
     agent = pending.pop(0)
     request = state["request"]
     trace = list(state.get("trace", []))
+    existing_results = list(state.get("agent_results", []))
+    scratchpad = state.get("scratchpad") or Scratchpad()
 
+    # Prepare context for agents - include scratchpad and previous results
+    context = dict(request.context or {})
+    context["scratchpad"] = scratchpad  # Pass scratchpad to agents
+    
+    # Prepare context for graph agent - include tabular data from previous agents
+    if agent == "graph":
+        # Find tabular data from previous agents
+        for prev_result in existing_results:
+            if prev_result.tabular:
+                context["tabular_data"] = prev_result.tabular
+                break
+        # Also pass agent_results for reference
+        context["agent_results"] = existing_results
+
+    # Execute agent
     if agent == "sql":
-        result = _run_sql_agent(request.question, request.context)
+        result = _run_sql_agent(request.question, context)
     elif agent == "computation":
-        result = _COMPUTATION_AGENT.invoke(request.question, context=request.context)
+        result = _COMPUTATION_AGENT.invoke(request.question, context=context)
     elif agent == "api_docs":
-        result = _run_api_docs_agent(request.question, request.context)
+        result = _run_api_docs_agent(request.question, context)
+    elif agent == "graph":
+        result = _GRAPH_AGENT.invoke(request.question, context=context)
     else:
         result = AgentResult(
             agent=agent,
@@ -168,11 +287,50 @@ def execute_agent(state: OrchestratorState) -> OrchestratorState:
             error=AgentError(message=f"Agent '{agent}' not implemented"),
         )
 
+    # Extract findings and add to scratchpad
+    if result.status == AgentExecutionStatus.succeeded:
+        # Add agent answer as finding if available
+        if result.answer:
+            scratchpad.add(
+                agent=agent,
+                content=result.answer,
+                category="finding",
+                metadata={"status": "succeeded"},
+            )
+        
+        # Add data summary if tabular data exists
+        if result.tabular:
+            data_summary = _extract_data_summary(result.tabular)
+            scratchpad.add(
+                agent=agent,
+                content=data_summary,
+                category="data_summary",
+                metadata={
+                    "row_count": result.tabular.row_count,
+                    "column_count": len(result.tabular.columns) if result.tabular.columns else 0,
+                },
+            )
+        
+        # Add graph insights if available
+        if result.graph and result.graph.trend_analysis:
+            scratchpad.add(
+                agent=agent,
+                content=result.graph.trend_analysis,
+                category="insight",
+                metadata={"chart_type": result.graph.chart_type},
+            )
+    elif result.status == AgentExecutionStatus.failed and result.error:
+        scratchpad.add(
+            agent=agent,
+            content=f"Error: {result.error.message}",
+            category="error",
+            metadata={"error_type": result.error.type or "Unknown"},
+        )
+
     # Merge traces while keeping chronological order
     if result.trace:
         trace.extend(result.trace)
 
-    existing_results = list(state.get("agent_results", []))
     existing_results.append(result)
 
     return {
@@ -180,6 +338,7 @@ def execute_agent(state: OrchestratorState) -> OrchestratorState:
         "pending_agents": pending,
         "agent_results": existing_results,
         "trace": trace,
+        "scratchpad": scratchpad,
     }
 
 
@@ -209,6 +368,7 @@ def compose_node(state: OrchestratorState) -> OrchestratorState:
         )
     else:
         # Regular composer with agent results
+        scratchpad = state.get("scratchpad")
         response = _COMPOSER.compose(
             question=request.question,
             planner_rationale=planner.rationale if planner else "",
@@ -218,6 +378,7 @@ def compose_node(state: OrchestratorState) -> OrchestratorState:
                 "confidence": planner.confidence if planner else None,
                 "agents": [result.agent for result in agent_results],
             },
+            scratchpad=scratchpad,
         )
 
     trace.append(
