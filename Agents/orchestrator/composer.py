@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from decimal import Decimal
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, List, Optional
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda
@@ -66,8 +66,10 @@ def _extract_readable_value(obj: dict) -> str:
     """
     Extract a readable string representation from a dictionary/object.
     
-    Tries to find common fields like 'name', 'title', 'product_name', etc.
-    Falls back to a comma-separated key-value format or JSON string.
+    Uses intelligent field selection based on:
+    - Field name patterns (name-like, title-like, label-like fields)
+    - Value characteristics (type, length, readability)
+    - Field priority scoring
     
     Args:
         obj: Dictionary to extract readable value from
@@ -78,37 +80,104 @@ def _extract_readable_value(obj: dict) -> str:
     if not isinstance(obj, dict) or not obj:
         return str(obj)
     
-    # Priority order for extracting readable fields
-    preferred_fields = [
-        "name", "title", "product_name", "productName",
-        "label", "description", "id", "value", "text"
-    ]
+    def _score_field(key: str, value: Any) -> float:
+        """
+        Score a field based on how likely it is to be a readable identifier.
+        Higher score = more likely to be the best readable value.
+        
+        Returns:
+            Score from 0.0 to 1.0
+        """
+        score = 0.0
+        key_lower = key.lower()
+        
+        # Pattern matching for field names (dynamic, not hardcoded list)
+        # Name-like patterns
+        if any(pattern in key_lower for pattern in ["name", "title", "label"]):
+            score += 0.4
+        # Identifier patterns
+        if key_lower in ["id", "identifier", "key", "code", "sku"]:
+            score += 0.3
+        # Description/display patterns
+        if any(pattern in key_lower for pattern in ["description", "text", "value", "display"]):
+            score += 0.2
+        # Product/item specific patterns
+        if any(pattern in key_lower for pattern in ["product", "item", "variant"]):
+            score += 0.15
+        
+        # Value type scoring
+        if isinstance(value, str):
+            # Prefer short, meaningful strings (not too long, not empty)
+            str_len = len(value.strip())
+            if 1 <= str_len <= 100:  # Reasonable length
+                score += 0.2
+            elif str_len > 200:  # Too long, less preferred
+                score -= 0.1
+        elif isinstance(value, (int, float)):
+            # Numeric IDs are okay but less readable than strings
+            score += 0.1
+        elif isinstance(value, (dict, list)):
+            # Complex objects are not directly readable
+            score -= 0.2
+        
+        # Avoid technical/internal fields
+        if key_lower.startswith("_") or key_lower in ["metadata", "config", "settings"]:
+            score -= 0.3
+        
+        # Prefer fields that are not None/empty
+        if value is None or value == "":
+            score -= 0.5
+        
+        return max(0.0, min(1.0, score))  # Clamp between 0 and 1
     
-    # Try to find a preferred field
-    for field in preferred_fields:
-        if field in obj and obj[field] is not None:
-            return str(obj[field])
+    # Score all fields and find the best one
+    scored_fields = []
+    for key, value in obj.items():
+        if value is not None:
+            score = _score_field(key, value)
+            scored_fields.append((score, key, value))
     
-    # If no preferred field found, try to create a readable format
-    # Use first non-empty string value, or create key-value pairs
+    # Sort by score (highest first)
+    scored_fields.sort(key=lambda x: x[0], reverse=True)
+    
+    # Return the highest scoring field if it has a good score
+    if scored_fields and scored_fields[0][0] > 0.3:
+        best_score, best_key, best_value = scored_fields[0]
+        # Convert to string if it's a simple type
+        if isinstance(best_value, (str, int, float, bool)):
+            return str(best_value)
+        elif isinstance(best_value, (dict, list)):
+            # For complex values, try to extract from them recursively
+            if isinstance(best_value, dict):
+                nested = _extract_readable_value(best_value)
+                if nested != str(best_value):  # If we got something meaningful
+                    return nested
+    
+    # If no good field found, try to find first simple readable value
     for key, val in obj.items():
         if val is not None and val != "":
             if isinstance(val, (str, int, float, bool)):
-                return str(val)
+                # Check if it's not too long
+                str_val = str(val)
+                if len(str_val) <= 150:  # Reasonable length for display
+                    return str_val
     
     # Fallback: create comma-separated key-value pairs for readability
     try:
         # Limit to first few key-value pairs to avoid overly long strings
         items = list(obj.items())[:3]
-        kv_pairs = [f"{k}: {v}" for k, v in items if v is not None]
+        kv_pairs = [f"{k}: {v}" for k, v in items if v is not None and not isinstance(v, (dict, list))]
         if kv_pairs:
             return ", ".join(kv_pairs)
     except Exception:
         pass
     
-    # Final fallback: JSON string
+    # Final fallback: JSON string (truncated if too long)
     try:
-        return json.dumps(obj, default=str, ensure_ascii=False)
+        json_str = json.dumps(obj, default=str, ensure_ascii=False)
+        if len(json_str) > 200:
+            return json_str[:197] + "..."
+        return json_str
     except (TypeError, ValueError):
         return str(obj)
 
@@ -221,7 +290,8 @@ class Composer:
         results = list(agent_results)
         summaries = []
         tabular = self._select_tabular(results)
-        graph = self._select_graph(results)
+        graphs = self._collect_all_graphs(results)
+        graph = graphs[0] if graphs else None  # Backward compatibility
         
         # Normalize tabular data to ensure proper serialization for tables
         normalized_tabular = _normalize_tabular_data(tabular)
@@ -255,7 +325,8 @@ class Composer:
         return OrchestratorResponse(
             answer=str(answer),
             data=normalized_tabular,
-            graph=graph,
+            graph=graph,  # Backward compatibility
+            graphs=graphs,  # All graphs
             agent_results=results,
             metadata=metadata or {},
         )
@@ -299,11 +370,20 @@ class Composer:
 
     @staticmethod
     def _select_graph(results: Iterable[AgentResult]) -> Optional[GraphResult]:
-        """Select the first graph result from agent results."""
+        """Select the first graph result from agent results (backward compatibility)."""
         for result in results:
             if result.graph:
                 return result.graph
         return None
+
+    @staticmethod
+    def _collect_all_graphs(results: Iterable[AgentResult]) -> List[GraphResult]:
+        """Collect all graph results from agent results."""
+        graphs = []
+        for result in results:
+            if result.graph:
+                graphs.append(result.graph)
+        return graphs
 
 
 __all__ = ["Composer"]

@@ -32,10 +32,12 @@ from Agents.core.models import (
     TraceEvent,
     TraceEventType,
 )
+from Agents.ApiDocsAgent.mcp_client import ApiMCPClient, EndpointDefinition
 
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_CONTEXT_PATH = Path(__file__).resolve().parents[2] / "Docs" / "api_docs_context.yaml"
+DEFAULT_ENDPOINTS_PATH = Path(__file__).parent / "endpoints.json"
 DEFAULT_BASE_URL = "https://dashbackend-a3cbagbzg0hydhen.centralindia-01.azurewebsites.net"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 FIREBASE_ID_ENDPOINT = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
@@ -62,13 +64,72 @@ class ApiEndpointSpec:
 
     @classmethod
     def from_line(cls, section_id: str, title: str, source: str, line: str) -> ApiEndpointSpec | None:
-        method_match = re.search(r"\b(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\b", line, re.IGNORECASE)
-        path_match = re.search(r"`([^`]+)`", line)
-        if not path_match:
+        line_stripped = line.strip()
+        if not line_stripped:
+            return None
+        
+        # Only process lines that look like endpoint definitions
+        # Must be either:
+        # 1. Markdown header: ## GET /api/path
+        # 2. Direct format: GET /api/path (with optional colon and description)
+        line_lower = line_stripped.lower()
+        
+        # Skip lines that are clearly not endpoint definitions
+        # (SQL queries, code snippets, descriptions, bullet points)
+        if line_stripped.startswith("- ") or line_stripped.startswith("* "):
+            # This is a bullet point, likely a description
+            return None
+        
+        if not (line_stripped.startswith("##") or re.match(r"^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+/", line_stripped, re.IGNORECASE)):
+            # Not a markdown header and not a direct endpoint definition
+            # Check if it contains SQL/code keywords (likely a description line)
+            if any(skip in line_lower for skip in ["select ", "insert ", "update ", "delete ", "executes ", "joins ", "calculates ", "margin =", "returns ", "filters "]):
+                return None
+        
+        # Try to extract from markdown header format first (e.g., `## GET /api/net_profit`)
+        # This is the most common format in the YAML
+        markdown_match = re.search(r"^##\s+(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+(/[\w\-_/:?=&]+)", line_stripped, re.IGNORECASE)
+        if markdown_match:
+            method_match = markdown_match
+            path = markdown_match.group(2).strip()
+        else:
+            # Try direct format: GET /api/path: description
+            direct_match = re.search(r"^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+(/[\w\-_/:?=&]+)", line_stripped, re.IGNORECASE)
+            if direct_match:
+                method_match = direct_match
+                path = direct_match.group(2).strip()
+            else:
+                # Try to extract path from backticks as last resort (e.g., `GET `/api/net_profit``)
+                path_match = re.search(r"`([^`]+)`", line_stripped)
+                if path_match:
+                    candidate_path = path_match.group(1).strip()
+                    if candidate_path.startswith("/") or candidate_path.startswith("http"):
+                        path = candidate_path
+                        method_match = re.search(r"\b(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\b", line_stripped, re.IGNORECASE)
+                    else:
+                        return None
+                else:
+                    return None
+        
+        if not path or not path.startswith("/"):
             return None
 
         method = method_match.group(1).upper() if method_match else "GET"
-        path = path_match.group(1).strip()
+        
+        # Clean up path - remove trailing description after colon
+        # Handle cases like "GET /api/net_profit: description"
+        if ":" in path:
+            # Split on colon, but only if it's not part of the path itself (e.g., /api/:id)
+            # Check if colon is followed by space or end of string (description)
+            colon_idx = path.find(":")
+            if colon_idx > 0 and (colon_idx == len(path) - 1 or path[colon_idx + 1] == " "):
+                path = path[:colon_idx].strip()
+        
+        # Final validation: path must be a valid HTTP path
+        if not path.startswith("/") or len(path) < 2:
+            return None
+        
+        # Store the path (query params included if present)
         description = line.replace("`", "").strip(" -")
 
         tokens = _tokenize(" ".join([title, method, path, description]))
@@ -161,6 +222,7 @@ class ApiDocsAgent:
         *,
         llm: Optional[AzureChatOpenAI] = None,
         context_path: Path | str | None = None,
+        endpoints_path: Path | str | None = None,
         top_k: int = 5,
         http_client: Optional[httpx.Client] = None,
     ) -> None:
@@ -169,6 +231,16 @@ class ApiDocsAgent:
         self._context_path = Path(context_path) if context_path else DEFAULT_CONTEXT_PATH
         self._top_k = top_k
         self._http_client = http_client
+        
+        # Initialize MCP client for endpoint definitions - this is the primary source
+        endpoints_path = Path(endpoints_path) if endpoints_path else DEFAULT_ENDPOINTS_PATH
+        self._mcp_client = ApiMCPClient(endpoints_path)
+        
+        # Get base context from MCP (endpoints.json) - this is the source of truth
+        self._mcp_context = self._mcp_client.get_all_endpoints_context()
+        
+        # Legacy YAML is now only for additional documentation snippets
+        # Endpoint definitions come from endpoints.json via MCP
         self._endpoints, self._doc_contexts = self._load_context_sources(self._context_path)
 
         self._planner_parser = PydanticOutputParser(pydantic_object=ApiCallPlan)
@@ -178,9 +250,31 @@ class ApiDocsAgent:
                     "system",
                     (
                         "You are an integration specialist tasked with planning exactly one HTTP API call. "
-                        "Choose an endpoint only from the provided candidates. "
-                        "Do not invent paths or payload fields. "
-                        "If you lack mandatory parameters, set make_request to false and explain why. "
+                        "Choose an endpoint ONLY from the provided candidates list. "
+                        "CRITICAL: Use the EXACT endpoint path from the candidates list. Do NOT construct or invent paths. "
+                        "Do NOT use SQL queries, database commands, or any non-HTTP paths. "
+                        "The path must match exactly one of the provided endpoint paths. "
+                        "\n\n"
+                        "PARAMETER USAGE RULES (CRITICAL - READ CAREFULLY):"
+                        "\n1. Use ONLY the parameters documented for the selected endpoint (shown in the candidate list)."
+                        "\n2. Do NOT invent or add parameters that are not documented."
+                        "\n3. IMPORTANT: If the candidate list shows 'Parameters: n (Number of days; default 7)', "
+                        "   then the endpoint ONLY accepts 'n' as a query parameter. "
+                        "   DO NOT use startDate, endDate, start_date, end_date, granularity, or any other parameters."
+                        "\n4. If the endpoint accepts 'n' (number of days):"
+                        "   - Calculate 'n' from the requested date range"
+                        "   - Use ONLY the 'n' parameter in query_params"
+                        "   - Example: For 'last 30 days', use query_params = {{'n': 30}}"
+                        "   - Example: For date range 2025-10-16 to 2025-11-14, calculate n = 30 days"
+                        "\n5. If the endpoint accepts 'startDate' and 'endDate':"
+                        "   - Use them in YYYY-MM-DD format"
+                        "   - Example: query_params = {{'startDate': '2025-10-16', 'endDate': '2025-11-14'}}"
+                        "\n6. NEVER mix parameter types - if endpoint uses 'n', don't use startDate/endDate"
+                        "\n7. Check the 'Additional context' section for detailed parameter documentation."
+                        "\n8. If the question provides explicit parameter calculation instructions, follow them exactly."
+                        "\n\n"
+                        "Do not invent payload fields. "
+                        "If you lack mandatory parameters or cannot determine the correct parameters from documentation, set make_request to false and explain why. "
                         "Respond strictly in JSON matching the format instructions."
                     ),
                 ),
@@ -376,21 +470,166 @@ class ApiDocsAgent:
         )
 
     def _plan_api_call(self, question: str, context: Dict[str, Any]) -> ApiCallPlan:
-        candidates = self._select_endpoints(question)
+        # Get base context from MCP client (endpoints.json) - this is the source of truth
+        # MCP context provides endpoint definitions, orchestrator provides execution context
+        # Merge them: MCP context takes precedence for endpoint definitions
+        mcp_context = self._mcp_context
+        
+        # Check if selected_tools are provided in context (from capability registry)
+        selected_tools = context.get("selected_tools", [])
+        candidates: List[EndpointDefinition] = []
+        preferred_endpoints: List[EndpointDefinition] = []
+        
+        if selected_tools:
+            LOGGER.info(f"Matching {len(selected_tools)} selected tools to endpoints: {selected_tools}")
+            # Use MCP client to find endpoints by tool ID
+            for tool_id in selected_tools:
+                mcp_endpoints = self._mcp_client.find_endpoints_by_tool_id(tool_id)
+                if mcp_endpoints:
+                    LOGGER.info(f"Found {len(mcp_endpoints)} MCP endpoints for tool '{tool_id}': {[e.id for e in mcp_endpoints]}")
+                    for ep in mcp_endpoints:
+                        if ep not in preferred_endpoints:
+                            preferred_endpoints.append(ep)
+                            candidates.append(ep)
+                else:
+                    # Fallback to legacy matching if MCP doesn't have it
+                    LOGGER.warning(f"No MCP endpoint found for tool '{tool_id}', falling back to legacy matching")
+                    # Legacy matching logic (keep for backward compatibility)
+                    tool_name = tool_id.replace("api_", "")
+                    for legacy_ep in self._endpoints:
+                        if tool_name in legacy_ep.path.lower() or tool_name in legacy_ep.description.lower():
+                            # Convert legacy endpoint to MCP format (create temporary)
+                            # For now, just log and continue
+                            LOGGER.debug(f"Legacy endpoint match: {legacy_ep.path}")
+        
+        # If no candidates from selected_tools, use MCP client to find by question
         if not candidates:
-            candidates = self._endpoints[: self._top_k]
+            # Try to find endpoints by keywords in question
+            all_endpoints = self._mcp_client.list_endpoints()
+            # Simple keyword matching
+            question_lower = question.lower()
+            for ep in all_endpoints:
+                if any(keyword in question_lower for keyword in [ep.id.replace("api_", ""), ep.title.lower()]):
+                    candidates.append(ep)
+                    if len(candidates) >= self._top_k:
+                        break
+        
+        # If still no candidates, use top endpoints
+        if not candidates:
+            candidates = self._mcp_client.list_endpoints()[: self._top_k]
 
         documentation = self._select_documentation(question)
         documentation_payload = [
             {"title": snippet.title, "source": snippet.source, "content": snippet.content}
             for snippet in documentation
         ]
+        # Build planning context: MCP context (endpoints.json) + orchestrator context
         planning_context = {
             "request_context": context or {},
             "documentation": documentation_payload,
+            "mcp_endpoints": mcp_context.get("endpoints", []),  # Endpoint definitions from JSON
+            "base_url": mcp_context.get("base_url"),  # Base URL from JSON
+            "authentication": mcp_context.get("authentication", {}),  # Auth config from JSON
         }
         context_dump = json.dumps(planning_context, default=str, ensure_ascii=False)
-        endpoints_text = self._format_candidates(candidates)
+        endpoints_text = self._format_mcp_candidates(candidates)
+        
+        # Enhance question when we have preferred endpoints from selected_tools
+        enhanced_question = question
+        if preferred_endpoints and selected_tools:
+            # Add explicit guidance about which endpoints to use
+            preferred_paths = [ep.path for ep in preferred_endpoints[:3]]  # Limit to top 3
+            # Extract parameter info from MCP endpoint definitions
+            param_info = []
+            date_range_hint = ""
+            
+            for ep in preferred_endpoints[:3]:
+                # Build parameter description from MCP definition
+                param_descriptions = []
+                for param_name in ep.query_params:
+                    param_def = ep.parameters.get(param_name)
+                    if param_def:
+                        param_desc = f"{param_name} ({param_def.type}"
+                        if param_def.description:
+                            param_desc += f": {param_def.description}"
+                        if param_def.default is not None:
+                            param_desc += f", default: {param_def.default}"
+                        param_desc += ")"
+                        param_descriptions.append(param_desc)
+                
+                if param_descriptions:
+                    param_info.append(f"{ep.path}: {', '.join(param_descriptions)}")
+                
+                # Check if endpoint uses 'n' parameter and calculate it
+                if "n" in ep.query_params:
+                    n_days = None
+                    start_date_str = None
+                    end_date_str = None
+                    
+                    # Try to get from sub_queries context
+                    if "sub_queries" in context:
+                        sub_queries = context.get("sub_queries", [])
+                        for sq in sub_queries:
+                            sq_context = sq.get("context", {})
+                            timeframe = sq_context.get("timeframe", {})
+                            if isinstance(timeframe, dict):
+                                start_date_str = timeframe.get("start")
+                                end_date_str = timeframe.get("end")
+                                if start_date_str and end_date_str:
+                                    n_days = self._mcp_client.calculate_n_from_date_range(start_date_str, end_date_str)
+                                    if n_days:
+                                        break
+                    
+                    # Fallback: extract from question
+                    if n_days is None:
+                        question_lower = question.lower()
+                        if "last" in question_lower:
+                            import re
+                            days_match = re.search(r'last\s+(\d+)\s+days?', question_lower)
+                            if days_match:
+                                n_days = int(days_match.group(1))
+                            else:
+                                months_match = re.search(r'last\s+(\d+)\s+months?', question_lower)
+                                if months_match:
+                                    months = int(months_match.group(1))
+                                    n_days = months * 30  # Approximate
+                    
+                    if n_days is not None:
+                        date_range_hint = (
+                            f"\n\nCALCULATION: For endpoints that accept 'n' parameter, "
+                            f"calculate n = {n_days} days from the requested date range. "
+                            f"Use query parameter: n={n_days}"
+                        )
+            
+            if param_info:
+                # Escape curly braces in param_info to avoid template variable issues
+                # Need to escape all curly braces that appear in the string
+                param_info_escaped = []
+                for info in param_info:
+                    # Escape curly braces but preserve the f-string formatting for the list
+                    escaped_info = info.replace("{", "{{").replace("}", "}}")
+                    param_info_escaped.append(escaped_info)
+                
+                # Also escape the date_range_hint
+                date_range_hint_escaped = date_range_hint.replace("{", "{{").replace("}", "}}") if date_range_hint else ""
+                
+                # Build the enhanced question with escaped content
+                param_list = "\n".join(f"  - {info}" for info in param_info_escaped)
+                enhanced_question = (
+                    f"{question}\n\n"
+                    f"IMPORTANT: Use one of these specific API endpoints: {', '.join(preferred_paths)}. "
+                    f"Do NOT construct custom paths. Use the exact endpoint paths provided above.\n"
+                    f"CRITICAL: Use ONLY the parameters documented for each endpoint:\n{param_list}"
+                    + (f"\n{date_range_hint_escaped}" if date_range_hint_escaped else "")
+                )
+            else:
+                enhanced_question = (
+                    f"{question}\n\n"
+                    f"IMPORTANT: Use one of these specific API endpoints: {', '.join(preferred_paths)}. "
+                    f"Do NOT construct custom paths. Use the exact endpoint paths provided above. "
+                    f"Check the endpoint definitions for the correct parameters."
+                )
+        
         planner_chain = (
             self._planner_prompt.partial(
                 format_instructions=self._planner_parser.get_format_instructions()
@@ -400,13 +639,21 @@ class ApiDocsAgent:
         )
 
         try:
+            # Escape any curly braces in endpoints_text that might be interpreted as template variables
+            # This prevents LangChain from trying to interpret {n}, {startDate}, etc. as template variables
+            endpoints_text_escaped = endpoints_text.replace("{", "{{").replace("}", "}}")
+            
             plan = planner_chain.invoke(
                 {
-                    "question": question,
-                    "endpoints": endpoints_text,
+                    "question": enhanced_question,
+                    "endpoints": endpoints_text_escaped,
                     "context": context_dump,
                 }
             )
+            
+            # Validate and auto-correct plan parameters based on endpoint documentation
+            plan = self._validate_and_correct_plan(plan, preferred_endpoints, documentation, context)
+            
         except ValidationError as exc:
             LOGGER.exception("Failed to parse planner output")
             raise AgentError(
@@ -421,6 +668,54 @@ class ApiDocsAgent:
                 type=type(exc).__name__,
             ) from exc
 
+        return plan
+
+    def _validate_and_correct_plan(
+        self, 
+        plan: ApiCallPlan, 
+        preferred_endpoints: List[EndpointDefinition],
+        documentation: List[DocumentationSnippet],
+        context: Dict[str, Any]
+    ) -> ApiCallPlan:
+        """
+        Validate the plan's parameters against MCP endpoint definitions and auto-correct common mistakes.
+        """
+        if not plan.make_request or not preferred_endpoints:
+            return plan
+        
+        # Find the endpoint being used
+        endpoint = None
+        for ep in preferred_endpoints:
+            if ep.path == plan.path or ep.path.split('?')[0] == plan.path.split('?')[0]:
+                endpoint = ep
+                break
+        
+        if not endpoint:
+            return plan
+        
+        # Use MCP client to validate and auto-correct parameters
+        query_params = plan.query_params or {}
+        
+        # Auto-correct parameters using MCP client
+        corrected_params = self._mcp_client.auto_correct_parameters(endpoint, query_params, context)
+        
+        # Validate corrected parameters
+        is_valid, error_msg, normalized_params = self._mcp_client.validate_parameters(endpoint, corrected_params)
+        
+        if not is_valid:
+            plan.make_request = False
+            plan.failure_reason = error_msg or "Invalid parameters for endpoint"
+            LOGGER.warning(f"Plan validation failed: {plan.failure_reason}")
+            return plan
+        
+        # Update plan with corrected and normalized parameters
+        if corrected_params != query_params or normalized_params != query_params:
+            LOGGER.info(
+                f"Auto-corrected plan parameters for {endpoint.id}: "
+                f"{query_params} -> {normalized_params}"
+            )
+            plan.query_params = normalized_params
+        
         return plan
 
     def _execute_plan(
@@ -594,13 +889,82 @@ class ApiDocsAgent:
         scored.sort(key=lambda entry: entry[0], reverse=True)
         return [endpoint for _, endpoint in scored[: self._top_k]]
 
-    @staticmethod
-    def _format_candidates(endpoints: Iterable[ApiEndpointSpec]) -> str:
+    def _format_mcp_candidates(self, endpoints: List[EndpointDefinition]) -> str:
+        """Format MCP endpoint definitions for the planner."""
         lines: List[str] = []
         for index, endpoint in enumerate(endpoints, start=1):
-            lines.append(
-                f"{index}. {endpoint.method} {endpoint.path} — {endpoint.description} (source: {endpoint.source})"
-            )
+            # Build parameter description from MCP definition
+            param_descriptions = []
+            for param_name in endpoint.query_params:
+                param_def = endpoint.parameters.get(param_name)
+                if param_def:
+                    param_desc = f"{param_name} ({param_def.type}"
+                    if param_def.description:
+                        param_desc += f": {param_def.description}"
+                    if param_def.default is not None:
+                        param_desc += f", default: {param_def.default}"
+                    param_desc += ")"
+                    param_descriptions.append(param_desc)
+            
+            # Format the endpoint line with prominent parameter info
+            if param_descriptions:
+                params_text = ", ".join(param_descriptions)
+                lines.append(
+                    f"{index}. {endpoint.method} {endpoint.path}\n"
+                    f"   Title: {endpoint.title}\n"
+                    f"   Description: {endpoint.description}\n"
+                    f"   PARAMETERS: {params_text}\n"
+                    f"   ID: {endpoint.id}"
+                )
+            else:
+                lines.append(
+                    f"{index}. {endpoint.method} {endpoint.path}\n"
+                    f"   Title: {endpoint.title}\n"
+                    f"   Description: {endpoint.description}\n"
+                    f"   PARAMETERS: None\n"
+                    f"   ID: {endpoint.id}"
+                )
+        return "\n".join(lines) if lines else "No candidate endpoints available."
+    
+    @staticmethod
+    def _format_candidates(endpoints: Iterable[ApiEndpointSpec], documentation: List[DocumentationSnippet] = None) -> str:
+        lines: List[str] = []
+        for index, endpoint in enumerate(endpoints, start=1):
+            # Try to find parameter information from documentation
+            param_info = ""
+            if documentation:
+                # Find documentation snippet that matches this endpoint
+                endpoint_path_base = endpoint.path.split('?')[0]  # Remove query params for matching
+                for doc in documentation:
+                    if endpoint_path_base.lower() in doc.content.lower() or endpoint.method.lower() + " " + endpoint_path_base.lower() in doc.content.lower():
+                        # Extract parameter information
+                        doc_content = doc.content
+                        if "**Parameters:**" in doc_content:
+                            param_section = doc_content.split("**Parameters:**")[-1].split("**")[0].strip()
+                            if param_section:
+                                param_info = f" | Parameters: {param_section[:200]}"  # Limit length
+                                break
+                        elif "Parameters:" in doc_content and "**Parameters:**" not in doc_content:
+                            # Try to extract from non-bold Parameters line
+                            for line in doc_content.split('\n'):
+                                if line.strip().startswith("Parameters:") or "parameter" in line.lower() and "accepts" in line.lower():
+                                    param_info = f" | {line.strip()[:200]}"
+                                    break
+                            if param_info:
+                                break
+            
+            # Format the endpoint line with prominent parameter info
+            if param_info:
+                lines.append(
+                    f"{index}. {endpoint.method} {endpoint.path}\n"
+                    f"   Description: {endpoint.description}\n"
+                    f"   ⚠️  PARAMETERS: {param_info}\n"
+                    f"   Source: {endpoint.source}"
+                )
+            else:
+                lines.append(
+                    f"{index}. {endpoint.method} {endpoint.path} — {endpoint.description} (source: {endpoint.source})"
+                )
         return "\n".join(lines) if lines else "No candidate endpoints available."
 
     @staticmethod
@@ -617,8 +981,14 @@ class ApiDocsAgent:
             )
         return rendered
 
-    @staticmethod
-    def _resolve_base_url(context: Dict[str, Any]) -> str:
+    def _resolve_base_url(self, context: Dict[str, Any]) -> str:
+        """Resolve base URL, prioritizing MCP client config from endpoints.json."""
+        # First try MCP client (from endpoints.json) - this is the source of truth
+        mcp_base_url = self._mcp_client.get_base_url()
+        if mcp_base_url:
+            return mcp_base_url.rstrip("/")
+        
+        # Fallback to context or environment
         candidates = [
             context.get("api_base_url"),
             context.get("base_url"),
@@ -797,7 +1167,11 @@ class ApiDocsAgent:
                     continue
                 endpoint = ApiEndpointSpec.from_line(section_id, title, source, line)
                 if endpoint is not None:
-                    endpoints.append(endpoint)
+                    # Validate endpoint path before adding
+                    if endpoint.path and endpoint.path.startswith("/") and len(endpoint.path) >= 2:
+                        endpoints.append(endpoint)
+                    else:
+                        LOGGER.warning(f"Skipping invalid endpoint path: '{endpoint.path}' from line: {line[:100]}")
 
         contexts_section = payload.get("contexts", [])
         doc_contexts = [DocumentationSnippet.from_mapping(entry) for entry in contexts_section]

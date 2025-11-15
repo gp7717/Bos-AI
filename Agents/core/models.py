@@ -51,23 +51,64 @@ class TabularResult(BaseModel):
 
 
 class GraphResult(BaseModel):
-    """Structured representation of graph/chart data returned by an agent."""
+    """Structured representation of graph/chart data returned by an agent.
+    
+    Follows API_RESPONSE_FORMAT.md specification:
+    - y_axis should always be an array (recommended format)
+    - chart_type must be one of: line, bar, pie, donut, scatter, area
+    - data must contain objects with x_axis and all y_axis keys
+    """
 
-    chart_type: Literal["line", "bar", "pie", "scatter", "area"] = Field(
-        ..., description="Type of chart to render"
+    chart_type: Literal["line", "bar", "pie", "donut", "scatter", "area"] = Field(
+        ..., description="Type of chart to render. Valid: line, bar, pie, donut, scatter, area"
     )
-    x_axis: str = Field(..., description="Column name or label for x-axis")
-    y_axis: str | List[str] = Field(..., description="Column name(s) or label(s) for y-axis")
+    x_axis: str = Field(..., description="Column name or label for x-axis (must exist in data objects)")
+    y_axis: List[str] = Field(
+        ..., 
+        description="Y-axis column name(s) as array. RECOMMENDED: Always use array format even for single metrics. Must exist in data objects."
+    )
     data: List[Dict[str, Any]] = Field(
-        ..., description="Simplified/aggregated data points for the graph"
+        ..., 
+        description="Array of data objects. Each object must contain x_axis key and all y_axis keys with numeric values."
     )
-    title: Optional[str] = Field(None, description="Chart title")
+    title: Optional[str] = Field(None, description="Chart title displayed above the chart")
     x_label: Optional[str] = Field(None, description="X-axis label")
-    y_label: Optional[str] = Field(None, description="Y-axis label")
+    y_label: Optional[str] = Field(None, description="Y-axis label (only used if single y-axis metric)")
     aggregation: Optional[str] = Field(
         None, description="Aggregation method applied (e.g., 'daily', 'monthly', 'sum', 'average')"
     )
-    trend_analysis: Optional[str] = Field(None, description="LLM-generated trend insights")
+    trend_analysis: Optional[str] = Field(None, description="Optional text analysis displayed below the chart")
+
+    @field_validator("y_axis", mode="before")
+    @classmethod
+    def _normalize_y_axis(cls, value: str | List[str] | None) -> List[str]:
+        """Normalize y_axis to always be an array (recommended format per API spec)."""
+        if value is None:
+            return []
+        if isinstance(value, list):
+            # Ensure all items are strings and filter out empty values
+            return [str(item).strip() for item in value if item]
+        if isinstance(value, str):
+            # Handle comma-separated string
+            if "," in value:
+                return [col.strip() for col in value.split(",") if col.strip()]
+            # Single string -> convert to array (recommended format)
+            return [value.strip()] if value.strip() else []
+        # Fallback: convert to string then array
+        return [str(value)] if value else []
+
+    @field_validator("chart_type", mode="before")
+    @classmethod
+    def _normalize_chart_type(cls, value: str) -> str:
+        """Normalize chart type to valid values."""
+        if isinstance(value, str):
+            normalized = value.lower().strip()
+            valid_types = ["line", "bar", "pie", "donut", "scatter", "area"]
+            if normalized in valid_types:
+                return normalized
+            # Fallback to line for invalid types
+            return "line"
+        return "line"
 
 
 class AgentError(BaseModel):
@@ -194,6 +235,141 @@ class RouterDecision(BaseModel):
     confidence: Optional[float] = None
 
 
+class Tool(BaseModel):
+    """Represents a specific tool/endpoint with capabilities."""
+
+    id: str = Field(..., description="Unique identifier for the tool")
+    name: str = Field(..., description="Tool name (e.g., 'GET /api/net_profit')")
+    type: Literal["api_endpoint", "sql_query", "python_function", "mcp_tool"] = Field(
+        ..., description="Type of tool"
+    )
+    agent: AgentName = Field(..., description="Which agent owns this tool")
+    capabilities: List[str] = Field(
+        default_factory=list, description="List of what this tool can do"
+    )
+    metrics: List[str] = Field(
+        default_factory=list, description="List of metrics this tool provides"
+    )
+    parameters: Dict[str, Any] = Field(
+        default_factory=dict, description="Required/optional parameters"
+    )
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict, description="Additional context (performance, availability, etc.)"
+    )
+
+
+class Skill(BaseModel):
+    """Represents a capability of an agent."""
+
+    id: str = Field(..., description="Unique identifier for the skill")
+    name: str = Field(..., description="Skill name (e.g., 'data_retrieval', 'metric_calculation')")
+    agent: AgentName = Field(..., description="Which agent has this skill")
+    description: str = Field(..., description="What the skill does")
+    tools: List[str] = Field(
+        default_factory=list, description="List of tool IDs that implement this skill"
+    )
+    use_cases: List[str] = Field(
+        default_factory=list, description="When to use this skill"
+    )
+    preferences: List[str] = Field(
+        default_factory=list, description="When to prefer this skill over alternatives"
+    )
+
+
+class AgentCapability(BaseModel):
+    """Complete capability profile for an agent."""
+
+    agent_name: AgentName = Field(..., description="Agent identifier")
+    description: str = Field(..., description="What this agent does")
+    skills: List[Skill] = Field(default_factory=list, description="List of skills")
+    tools: List[Tool] = Field(default_factory=list, description="List of tools")
+    strengths: List[str] = Field(
+        default_factory=list, description="What this agent is best at"
+    )
+    limitations: List[str] = Field(
+        default_factory=list, description="What this agent cannot do"
+    )
+    preferred_for: List[str] = Field(
+        default_factory=list, description="When to prefer this agent"
+    )
+    requires: List[str] = Field(
+        default_factory=list, description="Prerequisites (other agents, data, etc.)"
+    )
+
+
+class QueryIntent(BaseModel):
+    """Identified intent from user query."""
+
+    primary_intent: Literal[
+        "data_retrieval",
+        "analysis",
+        "comparison",
+        "trend_analysis",
+        "forecast",
+        "visualization",
+        "computation",
+        "api_inquiry",
+    ] = Field(..., description="Primary intent of the query")
+    secondary_intents: List[str] = Field(
+        default_factory=list, description="Additional intents if query is multi-faceted"
+    )
+    confidence: float = Field(ge=0.0, le=1.0, description="Confidence in intent detection")
+
+
+class SubQuery(BaseModel):
+    """A specific, actionable sub-query derived from user query."""
+
+    id: str = Field(..., description="Unique identifier")
+    original_phrase: str = Field(
+        ..., description="Original phrase from user query that triggered this sub-query"
+    )
+    detailed_query: str = Field(..., description="Detailed, specific query text")
+    intent: Literal[
+        "data_retrieval", "computation", "api_call", "visualization", "analysis"
+    ] = Field(..., description="Intent category of this sub-query")
+    required_agents: List[AgentName] = Field(
+        default_factory=list, description="Agents needed for this sub-query"
+    )
+    selected_tools: List[str] = Field(
+        default_factory=list, description="Tool IDs to use (from capability registry)"
+    )
+    dependencies: List[str] = Field(
+        default_factory=list, description="IDs of sub-queries this depends on"
+    )
+    priority: int = Field(default=0, description="Execution priority (higher = first)")
+    context: Dict[str, Any] = Field(
+        default_factory=dict, description="Additional context (timeframes, metrics, filters)"
+    )
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class DecomposedQuery(BaseModel):
+    """Result of natural language query decomposition."""
+
+    original_query: str = Field(..., description="Original user query")
+    interpreted_query: str = Field(
+        ..., description="LLM's interpretation of what user wants"
+    )
+    intent: QueryIntent = Field(..., description="Detected intent")
+    sub_queries: List[SubQuery] = Field(
+        default_factory=list, description="List of specific sub-queries"
+    )
+    inferred_metrics: List[str] = Field(
+        default_factory=list, description="Metrics inferred from query"
+    )
+    inferred_timeframes: Dict[str, str] = Field(
+        default_factory=dict, description="Timeframes inferred (e.g., {'start': '2024-01-01'})"
+    )
+    inferred_filters: Dict[str, Any] = Field(
+        default_factory=dict, description="Filters inferred (e.g., {'region': 'US'})"
+    )
+    capability_matches: Dict[str, Any] = Field(
+        default_factory=dict, description="Matched tools/agents from registry"
+    )
+    decomposition_rationale: str = Field(..., description="Explanation of decomposition")
+    confidence: float = Field(ge=0.0, le=1.0, description="Confidence in decomposition")
+
+
 class AgentRequest(BaseModel):
     """Canonical request payload accepted by the orchestrator."""
 
@@ -247,26 +423,43 @@ class OrchestratorResponse(BaseModel):
     answer: str
     data: Optional[TabularResult] = None
     graph: Optional[GraphResult] = None
+    graphs: List[GraphResult] = Field(
+        default_factory=list, description="Multiple graphs (new format)"
+    )
     agent_results: List[AgentResult] = Field(default_factory=list)
     trace: List[TraceEvent] = Field(default_factory=list)
     planner: Optional[PlannerDecision] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
+    @property
+    def all_graphs(self) -> List[GraphResult]:
+        """Get all graphs (backward compatible)."""
+        graphs = list(self.graphs)
+        if self.graph and self.graph not in graphs:
+            graphs.insert(0, self.graph)
+        return graphs
+
 
 __all__ = [
+    "AgentCapability",
     "AgentError",
     "AgentExecutionStep",
     "AgentExecutionStatus",
     "AgentName",
     "AgentRequest",
     "AgentResult",
+    "DecomposedQuery",
     "GraphResult",
     "MemoryEntry",
     "OrchestratorResponse",
     "PlannerDecision",
+    "QueryIntent",
     "RouterDecision",
     "Scratchpad",
+    "Skill",
+    "SubQuery",
     "TabularResult",
+    "Tool",
     "TraceEvent",
     "TraceEventType",
 ]

@@ -28,30 +28,45 @@ class _GraphAnalysis(BaseModel):
     """LLM analysis of table data structure and chart requirements."""
 
     reasoning: str = Field(..., description="Analysis of the data structure and user requirements")
-    chart_type: str = Field(..., description="Recommended chart type: line, bar, pie, scatter, or area")
+    chart_type: str = Field(..., description="Recommended chart type: line, bar, pie, donut, scatter, or area")
     x_axis_column: str = Field(..., description="Column name to use for x-axis")
-    y_axis_columns: List[str] = Field(..., description="Column name(s) to use for y-axis")
+    y_axis_columns: List[str] = Field(
+        ..., 
+        description="Column name(s) to use for y-axis as array. For multiple metrics (e.g., revenue and orders), include all in array."
+    )
     needs_aggregation: bool = Field(default=False, description="Whether data needs aggregation/simplification")
     aggregation_method: Optional[str] = Field(
         None, description="Aggregation method if needed: daily, monthly, sum, average, count, etc."
     )
     title: Optional[str] = Field(None, description="Suggested chart title")
     x_label: Optional[str] = Field(None, description="X-axis label")
-    y_label: Optional[str] = Field(None, description="Y-axis label")
+    y_label: Optional[str] = Field(None, description="Y-axis label (only used if single y-axis metric)")
 
 
 class _GraphData(BaseModel):
-    """Final graph data structure with simplified/aggregated data points."""
+    """Final graph data structure with simplified/aggregated data points.
+    
+    IMPORTANT: Follow API_RESPONSE_FORMAT.md specification:
+    - y_axis MUST be an array format: ["metric1", "metric2"] even for single metrics
+    - Each data object must contain x_axis key and all y_axis keys
+    - y_axis values must be numeric (strings will be parsed)
+    """
 
-    chart_type: str = Field(..., description="Chart type: line, bar, pie, scatter, or area")
-    x_axis: str = Field(..., description="X-axis column name or label")
-    y_axis: str | List[str] = Field(..., description="Y-axis column name(s) or label(s)")
-    data: List[Dict[str, Any]] = Field(..., description="Simplified/aggregated data points")
-    title: Optional[str] = Field(None, description="Chart title")
+    chart_type: str = Field(..., description="Chart type: line, bar, pie, donut, scatter, or area")
+    x_axis: str = Field(..., description="X-axis column name or label (must exist in data objects)")
+    y_axis: List[str] = Field(
+        ..., 
+        description="Y-axis column name(s) as ARRAY. RECOMMENDED: Always use array format even for single metrics. Example: ['revenue'] or ['revenue', 'orders']"
+    )
+    data: List[Dict[str, Any]] = Field(
+        ..., 
+        description="Array of data objects. Each object MUST contain x_axis key and all y_axis keys with numeric values. Can include additional keys for tooltips."
+    )
+    title: Optional[str] = Field(None, description="Chart title displayed above the chart")
     x_label: Optional[str] = Field(None, description="X-axis label")
-    y_label: Optional[str] = Field(None, description="Y-axis label")
+    y_label: Optional[str] = Field(None, description="Y-axis label (only used if single y-axis metric)")
     aggregation: Optional[str] = Field(None, description="Aggregation method applied")
-    trend_analysis: Optional[str] = Field(None, description="Key trends and insights identified")
+    trend_analysis: Optional[str] = Field(None, description="Optional text analysis displayed below the chart")
 
 
 def cast_agent(name: str) -> AgentName:
@@ -79,7 +94,9 @@ class GraphAgent:
                         "- Number of rows (if >100, suggest aggregation)\n"
                         "- User intent from the question\n"
                         "- Appropriate chart type (line for trends over time, bar for categories, "
-                        "pie for proportions, scatter for correlations, area for cumulative trends)\n"
+                        "pie/donut for proportions, scatter for correlations, area for cumulative trends)\n"
+                        "- For multiple metrics (e.g., revenue AND orders), include ALL in y_axis_columns array\n"
+                        "- CRITICAL: y_axis_columns MUST be an array, even for single metrics: ['metric'] not 'metric'\n"
                         "Return JSON following the format instructions."
                     ),
                 ),
@@ -101,10 +118,18 @@ class GraphAgent:
                     "system",
                     (
                         "You are a data processing expert. Based on the analysis, process the table data "
-                        "to create graph-ready data points. If aggregation is needed, apply it intelligently. "
-                        "For time-series data, group by appropriate time periods. For categorical data, "
-                        "aggregate numeric values appropriately. Return simplified data points that clearly "
-                        "show trends and patterns. Include trend analysis insights. "
+                        "to create graph-ready data points following API_RESPONSE_FORMAT.md specification.\n"
+                        "CRITICAL REQUIREMENTS:\n"
+                        "- y_axis MUST be an array format: ['metric'] even for single metrics, ['metric1', 'metric2'] for multiple\n"
+                        "- Each data object MUST contain the x_axis key and ALL y_axis keys\n"
+                        "- y_axis values must be numeric (convert strings to numbers)\n"
+                        "- You can include additional keys in data objects (they'll be available in tooltips)\n"
+                        "Processing rules:\n"
+                        "- If aggregation is needed, apply it intelligently\n"
+                        "- For time-series data, group by appropriate time periods\n"
+                        "- For categorical data, aggregate numeric values appropriately\n"
+                        "- Return simplified data points that clearly show trends and patterns\n"
+                        "- Include trend analysis insights\n"
                         "Return JSON following the format instructions."
                     ),
                 ),
@@ -284,31 +309,86 @@ class GraphAgent:
                 latency_ms=latency,
             )
 
-        # Validate chart_type
-        valid_chart_types = ["line", "bar", "pie", "scatter", "area"]
-        chart_type = graph_data.chart_type.lower()
+        # Validate and normalize chart_type (GraphResult model will handle normalization)
+        chart_type = graph_data.chart_type.lower().strip()
+        valid_chart_types = ["line", "bar", "pie", "donut", "scatter", "area"]
         if chart_type not in valid_chart_types:
             chart_type = "line"  # Default fallback
 
-        # Normalize y_axis to handle both string and list formats
-        y_axis_normalized: str | List[str]
+        # Normalize y_axis to always be an array (per API spec recommendation)
+        # GraphResult model will also normalize, but we do it here for clarity
+        y_axis_normalized: List[str]
         if isinstance(graph_data.y_axis, list):
-            y_axis_normalized = graph_data.y_axis
+            # Filter out empty values and ensure strings
+            y_axis_normalized = [str(item).strip() for item in graph_data.y_axis if item]
         elif isinstance(graph_data.y_axis, str):
-            # If it's a comma-separated string, split it; otherwise use as single string
+            # Handle comma-separated string
             if "," in graph_data.y_axis:
-                y_axis_normalized = [col.strip() for col in graph_data.y_axis.split(",")]
+                y_axis_normalized = [col.strip() for col in graph_data.y_axis.split(",") if col.strip()]
             else:
-                y_axis_normalized = graph_data.y_axis
+                # Single string -> convert to array (recommended format)
+                y_axis_normalized = [graph_data.y_axis.strip()] if graph_data.y_axis.strip() else []
         else:
-            y_axis_normalized = str(graph_data.y_axis)
+            # Fallback: convert to string then array
+            y_axis_normalized = [str(graph_data.y_axis)] if graph_data.y_axis else []
 
-        # Build GraphResult
+        # Validate data structure: ensure each data object has x_axis and all y_axis keys
+        validated_data = []
+        for idx, data_point in enumerate(graph_data.data):
+            if not isinstance(data_point, dict):
+                continue  # Skip invalid entries
+            
+            # Ensure x_axis key exists
+            if graph_data.x_axis not in data_point:
+                continue  # Skip entries missing x_axis
+            
+            # Ensure all y_axis keys exist (create with 0 if missing)
+            validated_point = dict(data_point)
+            for y_key in y_axis_normalized:
+                if y_key not in validated_point:
+                    validated_point[y_key] = 0
+                else:
+                    # Ensure numeric value (convert string to number)
+                    val = validated_point[y_key]
+                    try:
+                        if isinstance(val, str):
+                            # Try to convert string to number
+                            validated_point[y_key] = float(val.replace(",", ""))
+                        elif not isinstance(val, (int, float)):
+                            validated_point[y_key] = 0
+                    except (ValueError, AttributeError):
+                        validated_point[y_key] = 0
+            
+            validated_data.append(validated_point)
+
+        if not validated_data:
+            latency = (time.perf_counter() - start_time) * 1000
+            error = AgentError(
+                message="No valid data points generated after validation. Each data point must contain x_axis and all y_axis keys.",
+                type="DataValidationError",
+            )
+            trace.append(
+                TraceEvent(
+                    event_type=TraceEventType.ERROR,
+                    agent=cast_agent("graph"),
+                    message="Data validation failed",
+                    data={"x_axis": graph_data.x_axis, "y_axis": y_axis_normalized},
+                )
+            )
+            return AgentResult(
+                agent=cast_agent("graph"),
+                status=AgentExecutionStatus.failed,
+                error=error,
+                trace=trace,
+                latency_ms=latency,
+            )
+
+        # Build GraphResult (y_axis will be normalized to array by model validator)
         graph_result = GraphResult(
             chart_type=chart_type,  # type: ignore[arg-type]
             x_axis=graph_data.x_axis,
-            y_axis=y_axis_normalized,
-            data=graph_data.data,
+            y_axis=y_axis_normalized,  # Already normalized to array
+            data=validated_data,
             title=graph_data.title,
             x_label=graph_data.x_label,
             y_label=graph_data.y_label,

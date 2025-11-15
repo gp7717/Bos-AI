@@ -1,0 +1,262 @@
+{
+  "version": "1.0",
+  "base_url": "https://dashbackend-a3cbagbzg0hydhen.centralindia-01.azurewebsites.net",
+  "endpoints": [
+    {
+      "id": "api_net_profit_daily",
+      "method": "GET",
+      "path": "/api/net_profit_daily",
+      "title": "Daily Net Profit",
+      "description": "Daily net profit for last N days",
+      "parameters": {
+        "n": {
+          "type": "integer",
+          "description": "Number of days (default: 7)",
+          "required": false,
+          "default": 7,
+          "example": 30
+        }
+      },
+      "query_params": ["n"],
+      "path_params": [],
+      "request_body": null,
+      "response": {
+        "type": "array",
+        "schema": {
+          "date": "string",
+          "net_profit": "number"
+        },
+        "example": [
+          {
+            "date": "2025-11-15",
+            "net_profit": 1234.56
+          }
+        ]
+      },
+      "authentication": "bearer",
+      "timeout_seconds": 30
+    },
+    {
+      "id": "api_net_profit",
+      "method": "GET",
+      "path": "/api/net_profit",
+      "title": "Net Profit",
+      "description": "Get net profit for a date range",
+      "parameters": {
+        "startDate": {
+          "type": "string",
+          "format": "date",
+          "description": "Start date in YYYY-MM-DD format",
+          "required": false,
+          "example": "2025-10-16"
+        },
+        "endDate": {
+          "type": "string",
+          "format": "date",
+          "description": "End date in YYYY-MM-DD format",
+          "required": false,
+          "example": "2025-11-14"
+        }
+      },
+      "query_params": ["startDate", "endDate"],
+      "path_params": [],
+      "request_body": null,
+      "response": {
+        "type": "object",
+        "schema": {
+          "net_profit": "number",
+          "start_date": "string",
+          "end_date": "string"
+        }
+      },
+      "authentication": "bearer",
+      "timeout_seconds": 30
+    },
+    {
+      "id": "api_sales",
+      "method": "GET",
+      "path": "/api/sales",
+      "title": "Sales Data",
+      "description": "Get sales data for a date range",
+      "parameters": {
+        "startDate": {
+          "type": "string",
+          "format": "date",
+          "description": "Start date in YYYY-MM-DD format",
+          "required": false
+        },
+        "endDate": {
+          "type": "string",
+          "format": "date",
+          "description": "End date in YYYY-MM-DD format",
+          "required": false
+        }
+      },
+      "query_params": ["startDate", "endDate"],
+      "path_params": [],
+      "request_body": null,
+      "response": {
+        "type": "array",
+        "schema": {
+          "date": "string",
+          "sales": "number"
+        }
+      },
+      "authentication": "bearer",
+      "timeout_seconds": 30
+    },
+    {
+      "id": "api_ad_spend",
+      "method": "GET",
+      "path": "/api/ad_spend",
+      "title": "Ad Spend",
+      "description": "Get total ad spend from Meta and Google in a date range",
+      "parameters": {
+        "startDate": {
+          "type": "string",
+          "format": "date",
+          "description": "Start date in YYYY-MM-DD format",
+          "required": false
+        },
+        "endDate": {
+          "type": "string",
+          "format": "date",
+          "description": "End date in YYYY-MM-DD format",
+          "required": false
+        }
+      },
+      "query_params": ["startDate", "endDate"],
+      "path_params": [],
+      "request_body": null,
+      "response": {
+        "type": "object",
+        "schema": {
+          "googleSpend": "number",
+          "facebookSpend": "number",
+          "totalSpend": "number"
+        }
+      },
+      "authentication": "bearer",
+      "timeout_seconds": 30
+    },
+    {
+      "id": "api_cogs",
+      "method": "GET",
+      "path": "/api/cogs",
+      "title": "COGS",
+      "description": "Get COGS breakdown by traffic source",
+      "parameters": {
+        "startDate": {
+          "type": "string",
+          "format": "date",
+          "description": "Start date in YYYY-MM-DD format",
+          "required": false
+        },
+        "endDate": {
+          "type": "string",
+          "format": "date",
+          "description": "End date in YYYY-MM-DD format",
+          "required": false
+        }
+      },
+      "query_params": ["startDate", "endDate"],
+      "path_params": [],
+      "request_body": null,
+      "response": {
+        "type": "object",
+        "schema": {
+          "metaCogs": "number",
+          "googleCogs": "number",
+          "organicCogs": "number",
+          "totalCogs": "number"
+        }
+      },
+      "authentication": "bearer",
+      "timeout_seconds": 30
+    },
+    {
+      "id": "api_roas",
+      "method": "GET",
+      "path": "/api/roas",
+      "title": "ROAS",
+      "description": "Get ROAS (Return on Ad Spend) for a date range",
+      "parameters": {
+        "startDate": {
+          "type": "string",
+          "format": "date",
+          "description": "Start date in YYYY-MM-DD format",
+          "required": false
+        },
+        "endDate": {
+          "type": "string",
+          "format": "date",
+          "description": "End date in YYYY-MM-DD format",
+          "required": false
+        }
+      },
+      "query_params": ["startDate", "endDate"],
+      "path_params": [],
+      "request_body": null,
+      "response": {
+        "type": "object",
+        "schema": {
+          "roas": "number",
+          "start_date": "string",
+          "end_date": "string"
+        }
+      },
+      "authentication": "bearer",
+      "timeout_seconds": 30
+    },
+    {
+      "id": "api_health",
+      "method": "GET",
+      "path": "/health",
+      "title": "Health Check",
+      "description": "Server health check endpoint",
+      "parameters": {},
+      "query_params": [],
+      "path_params": [],
+      "request_body": null,
+      "response": {
+        "type": "object",
+        "schema": {
+          "status": "string",
+          "database": "string",
+          "timestamp": "string",
+          "uptime": "number"
+        }
+      },
+      "authentication": "none",
+      "timeout_seconds": 10
+    },
+    {
+      "id": "api_product_metrics",
+      "method": "GET",
+      "path": "/product_metrics",
+      "title": "Product Metrics",
+      "description": "Retrieve all product variants with margin calculation",
+      "parameters": {},
+      "query_params": [],
+      "path_params": [],
+      "request_body": null,
+      "response": {
+        "type": "array",
+        "schema": {
+          "sku": "string",
+          "selling_price": "number",
+          "cogs": "number",
+          "margin": "number"
+        }
+      },
+      "authentication": "bearer",
+      "timeout_seconds": 30
+    }
+  ],
+  "authentication": {
+    "type": "bearer",
+    "token_source": "firebase",
+    "token_endpoint": "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
+  }
+}
+

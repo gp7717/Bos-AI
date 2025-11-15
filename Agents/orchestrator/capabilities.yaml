@@ -1,0 +1,330 @@
+agents:
+  - name: "api_docs"
+    description: "HTTP API integration specialist for fetching pre-calculated metrics and data"
+    strengths:
+      - "Direct metric retrieval"
+      - "Pre-calculated data"
+      - "Fast response times"
+      - "Real-time data freshness"
+    limitations:
+      - "Only works with available API endpoints"
+      - "Cannot perform custom calculations"
+    preferred_for:
+      - "When metric is available via API"
+      - "When data is pre-calculated"
+      - "When speed is critical"
+      - "When net profit, revenue, sales, ROAS, or COGS are needed"
+    requires: []
+    skills:
+      - id: "api_data_retrieval"
+        name: "API Data Retrieval"
+        description: "Fetch data from HTTP API endpoints"
+        tools:
+          - "api_net_profit"
+          - "api_net_profit_single_day"
+          - "api_net_profit_daily"
+          - "api_sales"
+          - "api_cogs"
+          - "api_roas"
+          - "api_roas_by_date"
+          - "api_ad_spend"
+          - "api_order_count"
+          - "api_orders"
+        use_cases:
+          - "Fetching pre-calculated metrics"
+          - "Getting data from external APIs"
+          - "Retrieving net profit, revenue, sales data"
+        preferences:
+          - "Prefer over SQL when metric is directly available"
+          - "Use when data is pre-calculated"
+    tools:
+      - id: "api_net_profit"
+        name: "GET /api/net_profit"
+        type: "api_endpoint"
+        capabilities: ["fetch_net_profit", "calculate_channel_profit"]
+        metrics: ["net_profit", "meta_net_profit", "google_net_profit", "organic_net_profit", "total_net_profit"]
+        parameters:
+          required: []
+          optional: ["startDate", "endDate"]
+        metadata:
+          performance: "fast"
+          data_freshness: "real-time"
+          calculation: "pre-calculated"
+          description: "Compute net profit by channel (Meta, Google, Organic)"
+      
+      - id: "api_net_profit_single_day"
+        name: "GET /api/net_profit_single_day"
+        type: "api_endpoint"
+        capabilities: ["fetch_net_profit", "fetch_daily_profit"]
+        metrics: ["net_profit", "daily_net_profit"]
+        parameters:
+          required: []
+          optional: ["startDate", "endDate", "date"]
+        metadata:
+          performance: "fast"
+          data_freshness: "real-time"
+          calculation: "pre-calculated"
+          description: "Net profit for a single day/range with detailed breakdown"
+      
+      - id: "api_net_profit_daily"
+        name: "GET /api/net_profit_daily"
+        type: "api_endpoint"
+        capabilities: ["fetch_net_profit", "fetch_daily_profit"]
+        metrics: ["net_profit", "daily_net_profit"]
+        parameters:
+          required: []
+          optional: ["days"]
+        metadata:
+          performance: "fast"
+          data_freshness: "real-time"
+          calculation: "pre-calculated"
+          description: "Daily net profit for last N days"
+      
+      - id: "api_sales"
+        name: "GET /api/sales"
+        type: "api_endpoint"
+        capabilities: ["fetch_sales", "fetch_revenue"]
+        metrics: ["revenue", "sales", "meta_sales", "google_sales", "organic_sales", "total_sales"]
+        parameters:
+          required: []
+          optional: ["startDate", "endDate"]
+        metadata:
+          performance: "fast"
+          data_freshness: "real-time"
+          calculation: "pre-calculated"
+          description: "Get total sales, broken down by traffic source"
+      
+      - id: "api_cogs"
+        name: "GET /api/cogs"
+        type: "api_endpoint"
+        capabilities: ["fetch_cogs"]
+        metrics: ["cogs", "meta_cogs", "google_cogs", "organic_cogs", "total_cogs"]
+        parameters:
+          required: []
+          optional: ["startDate", "endDate"]
+        metadata:
+          performance: "fast"
+          data_freshness: "real-time"
+          calculation: "pre-calculated"
+          description: "Get COGS breakdown by traffic source"
+      
+      - id: "api_roas"
+        name: "GET /api/roas"
+        type: "api_endpoint"
+        capabilities: ["fetch_roas", "calculate_roas"]
+        metrics: ["roas", "gross_roas", "net_roas", "break_even_roas"]
+        parameters:
+          required: []
+          optional: ["startDate", "endDate"]
+        metadata:
+          performance: "fast"
+          data_freshness: "real-time"
+          calculation: "pre-calculated"
+          description: "Return on Ad Spend (ROAS) metrics"
+      
+      - id: "api_roas_by_date"
+        name: "GET /api/roas_by_date"
+        type: "api_endpoint"
+        capabilities: ["fetch_roas", "fetch_daily_roas"]
+        metrics: ["roas", "daily_roas"]
+        parameters:
+          required: []
+          optional: ["startDate", "endDate"]
+        metadata:
+          performance: "fast"
+          data_freshness: "real-time"
+          calculation: "pre-calculated"
+          description: "Returns daily ROAS in range"
+      
+      - id: "api_ad_spend"
+        name: "GET /api/ad_spend"
+        type: "api_endpoint"
+        capabilities: ["fetch_ad_spend"]
+        metrics: ["ad_spend", "google_spend", "facebook_spend", "total_ad_spend"]
+        parameters:
+          required: []
+          optional: ["startDate", "endDate"]
+        metadata:
+          performance: "fast"
+          data_freshness: "real-time"
+          calculation: "pre-calculated"
+          description: "Get total ad spend from Meta and Google"
+      
+      - id: "api_order_count"
+        name: "GET /api/order_count"
+        type: "api_endpoint"
+        capabilities: ["fetch_order_count"]
+        metrics: ["order_count", "orders"]
+        parameters:
+          required: []
+          optional: []
+        metadata:
+          performance: "fast"
+          data_freshness: "real-time"
+          calculation: "pre-calculated"
+          description: "Get order count"
+      
+      - id: "api_orders"
+        name: "GET /api/orders/:timeframe"
+        type: "api_endpoint"
+        capabilities: ["fetch_orders"]
+        metrics: ["orders", "order_data"]
+        parameters:
+          required: ["timeframe"]
+          optional: []
+        metadata:
+          performance: "fast"
+          data_freshness: "real-time"
+          calculation: "pre-calculated"
+          description: "Get orders by timeframe"
+
+  - name: "sql"
+    description: "Database query specialist for flexible data retrieval and custom aggregations"
+    strengths:
+      - "Flexible queries"
+      - "Raw data access"
+      - "Complex aggregations"
+      - "Custom calculations"
+    limitations:
+      - "Requires SQL knowledge"
+      - "Slower than API for pre-calculated metrics"
+      - "May need computation for complex metrics"
+    preferred_for:
+      - "When API doesn't have the data"
+      - "When custom calculations needed"
+      - "When querying raw tables"
+      - "When specific table data is required"
+    requires: []
+    skills:
+      - id: "sql_data_retrieval"
+        name: "SQL Data Retrieval"
+        description: "Query database using SQL"
+        tools:
+          - "mcp_db_query"
+          - "mcp_db_schema"
+        use_cases:
+          - "Querying raw database tables"
+          - "Custom aggregations"
+          - "When API unavailable"
+          - "Complex joins and filters"
+        preferences:
+          - "Use when API doesn't have the metric"
+          - "Use for custom queries"
+    tools:
+      - id: "mcp_db_query"
+        name: "MCP Database Query"
+        type: "mcp_tool"
+        capabilities: ["execute_sql", "query_tables", "calculate_metrics"]
+        metrics: []  # Can calculate any metric from raw data
+        parameters:
+          required: ["query"]
+          optional: []
+        metadata:
+          performance: "medium"
+          data_freshness: "real-time"
+          calculation: "on-demand"
+          description: "Execute read-only SQL queries via MCP"
+      
+      - id: "mcp_db_schema"
+        name: "MCP Database Schema"
+        type: "mcp_tool"
+        capabilities: ["get_schema", "list_tables"]
+        metrics: []
+        parameters:
+          required: ["table_names"]
+          optional: []
+        metadata:
+          performance: "fast"
+          data_freshness: "static"
+          calculation: "metadata"
+          description: "Get schema information for tables"
+
+  - name: "computation"
+    description: "Python computation specialist for complex calculations and statistical analysis"
+    strengths:
+      - "Complex calculations"
+      - "Statistical analysis"
+      - "Forecasting"
+      - "Custom formulas"
+    limitations:
+      - "Requires data from other agents"
+      - "Slower than API for simple calculations"
+    preferred_for:
+      - "When calculations are complex"
+      - "When statistical analysis needed"
+      - "When forecasting required"
+      - "When API doesn't calculate the metric"
+    requires:
+      - "Data from SQL or API agent"
+    skills:
+      - id: "metric_calculation"
+        name: "Metric Calculation"
+        description: "Calculate metrics using Python"
+        tools:
+          - "python_sandbox"
+        use_cases:
+          - "Complex calculations"
+          - "Statistical analysis"
+          - "Forecasting"
+          - "Custom formulas"
+        preferences:
+          - "Use when calculation is complex"
+          - "Use when API doesn't provide the metric"
+    tools:
+      - id: "python_sandbox"
+        name: "Python Sandbox"
+        type: "python_function"
+        capabilities: ["calculate", "analyze", "forecast", "statistics"]
+        metrics: []  # Can calculate any metric
+        parameters:
+          required: ["code"]
+          optional: ["data", "context"]
+        metadata:
+          performance: "medium"
+          data_freshness: "on-demand"
+          calculation: "on-demand"
+          description: "Execute Python code in sandboxed environment"
+
+  - name: "graph"
+    description: "Data visualization specialist for generating charts and graphs"
+    strengths:
+      - "Chart generation"
+      - "Trend visualization"
+      - "Data presentation"
+      - "Multiple chart types"
+    limitations:
+      - "Requires tabular data from other agents"
+      - "Cannot generate data"
+    preferred_for:
+      - "When visualization requested"
+      - "When trends need display"
+      - "When charts are needed"
+    requires:
+      - "Tabular data from SQL, API, or Computation agent"
+    skills:
+      - id: "data_visualization"
+        name: "Data Visualization"
+        description: "Generate charts and graphs"
+        tools:
+          - "graph_generator"
+        use_cases:
+          - "Creating visualizations"
+          - "Displaying trends"
+          - "Chart generation"
+        preferences:
+          - "Use when user requests graph, chart, or visualization"
+    tools:
+      - id: "graph_generator"
+        name: "Graph Generator"
+        type: "python_function"
+        capabilities: ["generate_chart", "create_visualization", "plot_data"]
+        metrics: []  # Consumes data, produces graphs
+        parameters:
+          required: ["tabular_data"]
+          optional: ["chart_type", "x_axis", "y_axis", "title"]
+        metadata:
+          performance: "fast"
+          data_freshness: "on-demand"
+          calculation: "on-demand"
+          description: "Generate charts from tabular data"
+
