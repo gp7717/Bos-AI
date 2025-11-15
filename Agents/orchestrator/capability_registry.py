@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from Agents.core.models import AgentCapability, AgentName, Skill, Tool
+from Agents.core.models import AgentCapability, AgentName, QueryPattern, Skill, Tool
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +109,17 @@ class CapabilityRegistry:
                 self.skills_by_capability[capability_type] = []
             self.skills_by_capability[capability_type].append(skill)
 
+        # Load query patterns
+        query_patterns = {}
+        patterns_config = agent_config.get("query_patterns", {})
+        for pattern_name, pattern_data in patterns_config.items():
+            if isinstance(pattern_data, dict):
+                query_patterns[pattern_name] = QueryPattern(
+                    keywords=pattern_data.get("keywords", []),
+                    boost_score=pattern_data.get("boost_score", 0),
+                    reason=pattern_data.get("reason", ""),
+                )
+
         # Create agent capability
         capability = AgentCapability(
             agent_name=agent_name,  # type: ignore[assignment]
@@ -119,6 +130,7 @@ class CapabilityRegistry:
             limitations=agent_config.get("limitations", []),
             preferred_for=agent_config.get("preferred_for", []),
             requires=agent_config.get("requires", []),
+            query_patterns=query_patterns,
         )
 
         self.agents[agent_name] = capability
@@ -207,16 +219,20 @@ class CapabilityRegistry:
         """
         query_lower = query.lower()
 
-        # If metrics are specified, check if API has them
+        # BIAS: Prefer SQL for data retrieval (more flexible than API)
+        sql_agent = self.agents.get("sql")
+        if sql_agent:
+            return sql_agent
+
+        # If metrics are specified, check if API has them (fallback)
         if preferred_metrics:
             for metric in preferred_metrics:
                 tools = self.find_tools_for_metric(metric)
-                # Prefer API tools (they're usually faster and pre-calculated)
                 api_tools = [t for t in tools if t.type == "api_endpoint" and t.agent == "api_docs"]
                 if api_tools:
                     api_agent = self.agents.get("api_docs")
                     if api_agent:
-                        logger.info(f"Selected api_docs agent for metric: {metric}")
+                        logger.info(f"Selected api_docs agent for metric: {metric} (fallback)")
                         return api_agent
 
         # Check for specific keywords in query
@@ -233,11 +249,6 @@ class CapabilityRegistry:
             comp_agent = self.agents.get("computation")
             if comp_agent:
                 return comp_agent
-
-        # Default to SQL for data retrieval
-        sql_agent = self.agents.get("sql")
-        if sql_agent:
-            return sql_agent
 
         return None
 
@@ -323,6 +334,76 @@ class CapabilityRegistry:
     def list_all_agents(self) -> List[AgentCapability]:
         """Get all registered agents."""
         return list(self.agents.values())
+
+    def detect_query_patterns(self, query: str) -> Dict[str, Dict[str, Any]]:
+        """
+        Detect query patterns across all agents and return matches with scores.
+        
+        Args:
+            query: User query text
+            
+        Returns:
+            Dictionary mapping agent_name -> pattern_matches with scores and reasons
+        """
+        query_lower = query.lower()
+        pattern_matches = {}
+        
+        for agent_name, capability in self.agents.items():
+            matches = []
+            total_boost = 0
+            
+            for pattern_name, pattern in capability.query_patterns.items():
+                # Check if any keyword in pattern matches query
+                matched_keywords = [kw for kw in pattern.keywords if kw.lower() in query_lower]
+                
+                if matched_keywords:
+                    matches.append({
+                        "pattern": pattern_name,
+                        "keywords": matched_keywords,
+                        "boost_score": pattern.boost_score,
+                        "reason": pattern.reason,
+                    })
+                    total_boost += pattern.boost_score
+            
+            if matches:
+                pattern_matches[agent_name] = {
+                    "matches": matches,
+                    "total_boost": total_boost,
+                    "should_use": total_boost > 0,
+                }
+        
+        return pattern_matches
+
+    def get_preferred_agent_for_query(self, query: str) -> Optional[AgentName]:
+        """
+        Determine the preferred agent for a query based on query patterns.
+        
+        Args:
+            query: User query text
+            
+        Returns:
+            Preferred agent name, or None if no strong pattern match
+        """
+        pattern_matches = self.detect_query_patterns(query)
+        
+        if not pattern_matches:
+            return None
+        
+        # Find agent with highest boost score
+        best_agent = None
+        best_score = 0
+        
+        for agent_name, match_info in pattern_matches.items():
+            if match_info["total_boost"] > best_score:
+                best_score = match_info["total_boost"]
+                best_agent = agent_name
+        
+        if best_agent:
+            logger.info(
+                f"Query pattern detection: {best_agent} selected with boost score {best_score}"
+            )
+        
+        return best_agent
 
 
 __all__ = ["CapabilityRegistry"]

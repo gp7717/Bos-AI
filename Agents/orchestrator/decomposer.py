@@ -70,19 +70,25 @@ CRITICAL INSTRUCTIONS:
 5. Map each sub-query to appropriate agents and tools using the capability registry
 
 AVAILABLE AGENTS:
-- api_docs: HTTP API integration - PREFERRED when metrics are available via API (net_profit, revenue, sales, ROAS, COGS)
-- sql: Database queries - Use when API doesn't have the data or custom queries needed
+- sql: Database queries - PREFERRED for data retrieval (more flexible, direct database access)
+- api_docs: HTTP API integration - Use when SQL is not suitable or API provides pre-computed aggregations
 - computation: Calculations, forecasts, statistical analysis - Use for complex calculations
 - graph: Data visualization, charts, trends - Use when visualization is requested
 
 CAPABILITY REGISTRY INSIGHTS:
-- Net profit: Available via API endpoint /api/net_profit (PREFER api_docs agent)
-- Revenue/Sales: Available via API endpoint /api/sales (PREFER api_docs agent)
-- ROAS: Available via API endpoint /api/roas (PREFER api_docs agent)
-- COGS: Available via API endpoint /api/cogs (PREFER api_docs agent)
-- Ad Spend: Available via API endpoint /api/ad_spend (PREFER api_docs agent)
+- Net profit: Available via SQL (shopify_orders table) or API endpoint /api/net_profit (PREFER sql agent)
+- Revenue/Sales: Available via SQL (shopify_orders table) or API endpoint /api/sales (PREFER sql agent)
+- ROAS: Available via SQL (calculated from orders and ad spend) or API endpoint /api/roas (PREFER sql agent)
+- COGS: Available via SQL (shopify_orders table) or API endpoint /api/cogs (PREFER sql agent)
+- Ad Spend: Available via SQL (ad_spend tables) or API endpoint /api/ad_spend (PREFER sql agent)
 
-IMPORTANT: Always check if metrics are available via API first. Only use SQL/computation when API doesn't have the data.
+CRITICAL RULES FOR AGENT SELECTION:
+1. HOURLY QUERIES: ALWAYS use SQL agent. API endpoints typically return daily/monthly data, not hourly. Use attribution table or shopify_orders with hour-level grouping.
+2. CHANNEL/ATTRIBUTION QUERIES: ALWAYS use SQL agent. Channel breakdowns (Meta, Google, Organic) require attribution table queries.
+3. GRANULARITY KEYWORDS: "hourly", "by hour", "per hour" → SQL agent (attribution table)
+4. CHANNEL KEYWORDS: "channel", "meta", "google", "organic", "attribution", "utm" → SQL agent (attribution table)
+5. DEFAULT: PREFER SQL agent for data retrieval. SQL provides more flexibility, direct database access, and custom query capabilities.
+6. API FALLBACK: Use API only when SQL is not suitable or when pre-computed daily/monthly aggregations are explicitly needed.
 
 COMMON BUSINESS METRICS:
 - Revenue, Sales, Orders, Conversion Rate, ROAS, CPA, AOV, Customer Count, Net Profit, COGS, Ad Spend
@@ -97,10 +103,17 @@ TIME FRAME INFERENCE:
 
 EXAMPLES:
 
+User Query: "plot hourly sales and spend for meta and google channel for today hourly"
+Interpreted: "Retrieve hourly sales and ad spend data for Meta and Google channels for today and generate a visualization"
+Sub-queries:
+1. "Query attribution table for hourly sales and ad spend by channel (Meta, Google) for today" → sql (tool: sql_query), priority: 0
+   Context: {granularity: "hourly", channels: ["meta", "google"], date: "today"}
+2. "Generate hourly trend visualization for sales and spend by channel" → graph (tool: graph_generator), priority: 1, depends on: [1]
+
 User Query: "Get the net profit graph for the last 4 months"
 Interpreted: "Retrieve net profit data for the last 4 months and generate a visualization"
 Sub-queries:
-1. "Fetch net profit data via API for last 4 months" → api_docs (tool: api_net_profit), priority: 0
+1. "Query shopify_orders table for net profit data for last 4 months" → sql (tool: sql_query), priority: 0
 2. "Generate trend visualization for net profit over last 4 months" → graph (tool: graph_generator), priority: 1, depends on: [1]
 
 User Query: "What's our performance this month?"
@@ -136,7 +149,7 @@ OUTPUT FORMAT:
   - original_phrase: Part of user query that triggered this
   - detailed_query: Specific, actionable query text
   - intent: data_retrieval, computation, api_call, visualization, analysis
-  - required_agents: List of agent names needed (PREFER api_docs when metric available via API)
+  - required_agents: List of agent names needed (PREFER sql for hourly/channel queries, otherwise prefer sql over api_docs)
   - selected_tools: List of tool IDs from capability registry (e.g., ["api_net_profit"])
   - dependencies: IDs of sub-queries this depends on (empty if independent)
   - priority: Execution order (0 = first, higher = later)
@@ -182,8 +195,8 @@ Format instructions: {format_instructions}""",
         # Extract metrics from query to help with capability matching
         detected_metrics = self.registry.extract_metrics_from_query(question)
 
-        # Build capability summary for LLM
-        capability_summary = self._build_capability_summary(detected_metrics)
+        # Build capability summary for LLM (pass query for hourly/channel detection)
+        capability_summary = self._build_capability_summary(detected_metrics, question)
 
         try:
             response = (
@@ -199,6 +212,79 @@ Format instructions: {format_instructions}""",
                 "context_keys": list(context.keys()),
                 "capability_summary": capability_summary,
             })
+            
+            # Post-process: Use dynamic query pattern detection from capability registry
+            pattern_matches = self.registry.detect_query_patterns(question)
+            
+            # Find agents that have strong pattern matches (high boost scores)
+            preferred_agents = {}
+            for agent_name, match_info in pattern_matches.items():
+                if match_info["total_boost"] >= 5:  # Threshold for strong pattern match
+                    preferred_agents[agent_name] = match_info
+                    logger.info(
+                        f"Query pattern detected for {agent_name}: boost={match_info['total_boost']}, "
+                        f"patterns={[m['pattern'] for m in match_info['matches']]}"
+                    )
+            
+            # Apply pattern-based agent selection to sub-queries
+            if preferred_agents:
+                for sq_dict in response.sub_queries:
+                    intent = sq_dict.get("intent", "")
+                    if intent in ["data_retrieval", "api_call"]:
+                        # Find the best matching agent for this sub-query
+                        # Check if sub-query text also matches patterns
+                        sq_text = sq_dict.get("detailed_query", "") or sq_dict.get("original_phrase", "")
+                        sq_patterns = self.registry.detect_query_patterns(sq_text)
+                        
+                        # Merge query and sub-query pattern matches
+                        all_matches = {**pattern_matches}
+                        for agent_name, match_info in sq_patterns.items():
+                            if agent_name in all_matches:
+                                all_matches[agent_name]["total_boost"] += match_info["total_boost"]
+                                all_matches[agent_name]["matches"].extend(match_info["matches"])
+                            else:
+                                all_matches[agent_name] = match_info
+                        
+                        # Select agent with highest boost
+                        best_agent = None
+                        best_score = 0
+                        for agent_name, match_info in all_matches.items():
+                            if match_info["total_boost"] > best_score:
+                                best_score = match_info["total_boost"]
+                                best_agent = agent_name
+                        
+                        if best_agent and best_score >= 5:
+                            # Force the preferred agent
+                            current_agents = sq_dict.get("required_agents", [])
+                            if best_agent not in current_agents:
+                                sq_dict["required_agents"].insert(0, best_agent)
+                                logger.info(
+                                    f"Post-processed sub-query to use {best_agent} agent "
+                                    f"(pattern boost: {best_score})"
+                                )
+                            
+                            # Remove conflicting agents if pattern strongly indicates specific agent
+                            if best_score >= 10:  # Very strong pattern match
+                                # Remove api_docs if SQL is preferred (or vice versa)
+                                conflicting_agents = []
+                                if best_agent == "sql" and "api_docs" in current_agents:
+                                    conflicting_agents.append("api_docs")
+                                elif best_agent == "api_docs" and "sql" in current_agents:
+                                    conflicting_agents.append("sql")
+                                
+                                for conflicting in conflicting_agents:
+                                    if conflicting in sq_dict["required_agents"]:
+                                        sq_dict["required_agents"].remove(conflicting)
+                                        logger.info(
+                                            f"Removed conflicting agent {conflicting} due to strong pattern match for {best_agent}"
+                                        )
+                                
+                                # Update selected_tools based on preferred agent
+                                if best_agent == "sql":
+                                    sq_dict["selected_tools"] = ["sql_query"]
+                                elif best_agent == "api_docs" and "api_" in str(sq_dict.get("selected_tools", [])):
+                                    # Keep API tools if they exist
+                                    pass
 
             # Convert to SubQuery objects
             sub_queries = []
@@ -209,7 +295,7 @@ Format instructions: {format_instructions}""",
                     # Try to infer tools from metrics and agents
                     metrics = sq_dict.get("context", {}).get("metrics", [])
                     agents = sq_dict.get("required_agents", [])
-                    selected_tools = self._infer_tools_from_metrics_and_agents(metrics, agents)
+                    selected_tools = self._infer_tools_from_metrics_and_agents(metrics, agents, question)
 
                 # Normalize dependencies: convert integers to strings, ensure all are strings
                 dependencies = sq_dict.get("dependencies", [])
@@ -291,41 +377,113 @@ Format instructions: {format_instructions}""",
             logger.warning(f"Query decomposition failed: {exc}. Using fallback.", exc_info=True)
             return self._create_fallback_decomposition(question, context, detected_metrics)
 
-    def _build_capability_summary(self, metrics: List[str]) -> str:
+    def _build_capability_summary(self, metrics: List[str], query: str = "") -> str:
         """Build a summary of available capabilities for the LLM."""
+        # Use dynamic query pattern detection
+        pattern_matches = self.registry.detect_query_patterns(query) if query else {}
+        
+        # Check for strong pattern matches
+        strong_patterns = {}
+        for agent_name, match_info in pattern_matches.items():
+            if match_info["total_boost"] >= 5:
+                strong_patterns[agent_name] = match_info
+        
         if not metrics:
-            return "No specific metrics detected. All agents available."
+            if strong_patterns:
+                pattern_info = []
+                for agent_name, match_info in strong_patterns.items():
+                    reasons = [m["reason"] for m in match_info["matches"]]
+                    pattern_info.append(f"{agent_name.upper()}: {', '.join(set(reasons))}")
+                return f"⚠️ QUERY PATTERN DETECTED: {' | '.join(pattern_info)}"
+            return "No specific metrics detected. PREFER SQL agent for data retrieval."
 
         summary_parts = []
+        if strong_patterns:
+            pattern_warnings = []
+            for agent_name, match_info in strong_patterns.items():
+                reasons = [m["reason"] for m in match_info["matches"]]
+                pattern_warnings.append(f"{agent_name.upper()}: {', '.join(set(reasons))}")
+            summary_parts.append(f"⚠️ QUERY PATTERN DETECTED: {' | '.join(pattern_warnings)}")
+        
         for metric in metrics:
             tools = self.registry.find_tools_for_metric(metric)
             if tools:
                 api_tools = [t for t in tools if t.type == "api_endpoint"]
-                if api_tools:
+                # Check if SQL pattern is strongly preferred
+                sql_preferred = "sql" in strong_patterns and strong_patterns["sql"]["total_boost"] >= 5
+                
+                if api_tools and not sql_preferred:
                     summary_parts.append(
-                        f"Metric '{metric}': Available via API ({', '.join([t.name for t in api_tools[:3]])}) - PREFER api_docs agent"
+                        f"Metric '{metric}': Available via API ({', '.join([t.name for t in api_tools[:3]])}) - But PREFER sql agent for flexibility"
                     )
                 else:
                     summary_parts.append(
-                        f"Metric '{metric}': Available via {tools[0].type} - Use {tools[0].agent} agent"
+                        f"Metric '{metric}': Available via {tools[0].type} - Use {tools[0].agent} agent (PREFER sql)"
                     )
             else:
                 summary_parts.append(
-                    f"Metric '{metric}': Not directly available - May need SQL/computation"
+                    f"Metric '{metric}': Not directly available - Use SQL agent (attribution/shopify_orders tables)"
                 )
 
-        return "\n".join(summary_parts) if summary_parts else "No specific capabilities matched."
+        return "\n".join(summary_parts) if summary_parts else "No specific capabilities matched. Default to SQL agent."
 
     def _infer_tools_from_metrics_and_agents(
-        self, metrics: List[str], agents: List[AgentName]
+        self, metrics: List[str], agents: List[AgentName], query: str = ""
     ) -> List[str]:
-        """Infer tool IDs from metrics and agents."""
+        """Infer tool IDs from metrics and agents, with dynamic pattern-based bias."""
+        # Use dynamic query pattern detection
+        pattern_matches = self.registry.detect_query_patterns(query) if query else {}
+        
+        # Check for strong pattern matches that indicate specific agent preference
+        for agent_name, match_info in pattern_matches.items():
+            if match_info["total_boost"] >= 5:
+                # Strong pattern match - prioritize this agent
+                if agent_name not in agents:
+                    agents.insert(0, agent_name)
+                    logger.info(
+                        f"Query pattern detected for {agent_name} (boost: {match_info['total_boost']}) - "
+                        f"prioritizing {agent_name} agent"
+                    )
+        
         tool_ids = []
-        for metric in metrics:
-            tools = self.registry.find_tools_for_metric(metric)
-            for tool in tools:
-                if tool.agent in agents and tool.id not in tool_ids:
-                    tool_ids.append(tool.id)
+        
+        # Check if SQL has strong pattern match (should be prioritized)
+        sql_has_strong_pattern = (
+            "sql" in pattern_matches and 
+            pattern_matches["sql"]["total_boost"] >= 5
+        )
+        
+        # Process SQL agent first (highest priority)
+        if "sql" in agents:
+            if "sql_query" not in tool_ids:
+                tool_ids.append("sql_query")
+        
+        # Then process other agents
+        for agent in agents:
+            if agent == "sql":
+                continue  # Already handled
+            elif agent == "api_docs":
+                # Only use API tools if SQL doesn't have strong pattern match
+                if not sql_has_strong_pattern:
+                    for metric in metrics:
+                        tools = self.registry.find_tools_for_metric(metric)
+                        api_tools = [t for t in tools if t.type == "api_endpoint" and t.agent == "api_docs"]
+                        for tool in api_tools:
+                            if tool.id not in tool_ids:
+                                tool_ids.append(tool.id)
+            elif agent == "computation":
+                if "computation" not in tool_ids:
+                    tool_ids.append("computation")
+            elif agent == "graph":
+                if "graph_generator" not in tool_ids:
+                    tool_ids.append("graph_generator")
+            else:
+                # Fallback: find tools for metrics matching this agent
+                for metric in metrics:
+                    tools = self.registry.find_tools_for_metric(metric)
+                    for tool in tools:
+                        if tool.agent == agent and tool.id not in tool_ids:
+                            tool_ids.append(tool.id)
 
         return tool_ids
 

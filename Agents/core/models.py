@@ -276,6 +276,14 @@ class Skill(BaseModel):
     )
 
 
+class QueryPattern(BaseModel):
+    """Query pattern that indicates when an agent should be used."""
+    
+    keywords: List[str] = Field(..., description="Keywords that trigger this pattern")
+    boost_score: int = Field(default=0, description="Score boost when pattern matches")
+    reason: str = Field(..., description="Why this pattern indicates the agent")
+
+
 class AgentCapability(BaseModel):
     """Complete capability profile for an agent."""
 
@@ -294,6 +302,9 @@ class AgentCapability(BaseModel):
     )
     requires: List[str] = Field(
         default_factory=list, description="Prerequisites (other agents, data, etc.)"
+    )
+    query_patterns: Dict[str, QueryPattern] = Field(
+        default_factory=dict, description="Query patterns that indicate this agent should be used"
     )
 
 

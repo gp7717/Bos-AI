@@ -185,6 +185,8 @@ agents:
       - "Raw data access"
       - "Complex aggregations"
       - "Custom calculations"
+      - "Hourly granularity support"
+      - "Channel/attribution breakdowns"
     limitations:
       - "Requires SQL knowledge"
       - "Slower than API for pre-calculated metrics"
@@ -194,6 +196,22 @@ agents:
       - "When custom calculations needed"
       - "When querying raw tables"
       - "When specific table data is required"
+      - "Hourly granularity queries"
+      - "Channel/attribution breakdowns"
+    query_patterns:
+      # Patterns that strongly indicate SQL should be used
+      hourly_granularity:
+        keywords: ["hourly", "hour", "hours", "by hour", "per hour"]
+        boost_score: 10
+        reason: "API endpoints don't support hourly granularity - use attribution table"
+      channel_attribution:
+        keywords: ["channel", "channels", "meta", "google", "organic", "attribution", "traffic source", "utm"]
+        boost_score: 5
+        reason: "Channel breakdowns require attribution table queries"
+      database_specific:
+        keywords: ["table", "tables", "database", "db", "query", "select", "where", "join", "group by", "order by"]
+        boost_score: 3
+        reason: "Explicit database/query keywords indicate SQL needed"
     requires: []
     skills:
       - id: "sql_data_retrieval"
